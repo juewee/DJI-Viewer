@@ -112,15 +112,40 @@ def main(folder: str) -> int:
     check("扫描后列出当前 DCIM 根目录", bool(dcim_roots), str(dcim_roots[:3]))
 
     print("\n== 2.6 按需分析（analyze=0） ==")
-    scan_off = get_json("/_api/scan", folder=folder, recursive=0, analyze=0)
-    prog_off = scan_off.get("progress") or {}
-    check("analyze=0 时不预先把素材排进分析队列",
-          scan_off.get("auto_analyze") is False and int(prog_off.get("total") or 0) == 0,
-          f"auto_analyze={scan_off.get('auto_analyze')} total={prog_off.get('total')}")
-    check("analyze=0 仍然准备好缩略图",
-          all(c.get("thumb") or not c.get("has_video") for c in scan_off["clips"]) or True,
-          f"{sum(1 for c in scan_off['clips'] if c.get('thumb'))} 张")
-    probe_clip = next((c for c in scan_off["clips"] if c.get("video_path")), None)
+    # 用一个干净的小目录验证：服务端"明明可以分析"，但因为 analyze=0 而没有排任何任务
+    ondemand = config.ROOT / "cache" / "_ondemand_test"
+    shutil.rmtree(ondemand, ignore_errors=True)
+    ondemand.mkdir(parents=True, exist_ok=True)
+    try:
+        src_video = next((c["video_path"] for c in clips if c.get("video_path")), None)
+        if src_video:
+            shutil.copyfile(src_video, ondemand / os.path.basename(src_video))
+        scan_off = get_json("/_api/scan", folder=str(ondemand), recursive=0, analyze=0)
+        check("analyze=0 时不预先把素材排进分析队列",
+              scan_off.get("auto_analyze") is False
+              and int(scan_off.get("queued_for_analysis") or 0) == 0,
+              f"auto_analyze={scan_off.get('auto_analyze')} "
+              f"queued={scan_off.get('queued_for_analysis')}")
+        check("analyze=0 仍然返回待分析清单（只是没排队）",
+              len(scan_off.get("needs_probe") or []) >= 1,
+              f"{len(scan_off.get('needs_probe') or [])} 个待分析")
+        # 等出图阶段的活干完（同一条文件还在缩略图队列里时，enqueue 会按去重跳过）
+        wait_until = time.time() + 60
+        while time.time() < wait_until:
+            pr = get_json("/_api/progress")["progress"]
+            if int(pr.get("pending") or 0) == 0 and pr.get("phase") != "thumb":
+                break
+            time.sleep(0.3)
+        # 同一目录用默认参数扫一次 → 应该排队（此时该文件的缩略图已就绪，不会被当成出图任务）
+        scan_on = get_json("/_api/scan", folder=str(ondemand), recursive=0)
+        check("默认（analyze 省略）会排进分析队列",
+              scan_on.get("auto_analyze") is True
+              and int(scan_on.get("queued_for_analysis") or 0) >= 1,
+              f"queued={scan_on.get('queued_for_analysis')}")
+    finally:
+        shutil.rmtree(ondemand, ignore_errors=True)
+
+    probe_clip = next((c for c in clips if c.get("video_path")), None)
     if probe_clip:
         t0 = time.time()
         pr = get_json("/_api/probe", path=probe_clip["video_path"], wait=1)
@@ -226,6 +251,23 @@ def main(folder: str) -> int:
     with urllib.request.urlopen(tail, timeout=60) as res:
         last = res.read()
     check("后缀 Range -512 正确", last == real[-512:])
+
+    print("\n== 5.5 拖出下载（Content-Disposition） ==")
+    dl_url = media_url("/_media/", media_path) + "?dl=1"
+    with urllib.request.urlopen(dl_url, timeout=120) as res:
+        dl_head = res.headers.get("Content-Disposition") or ""
+        dl_len = res.headers.get("Content-Length")
+        dl_first = res.read(2048)
+    fname = os.path.basename(media_path)
+    check("dl=1 返回附件头", dl_head.startswith("attachment;"), dl_head[:60])
+    check("附件头带文件名", "filename=" in dl_head, dl_head[:80])
+    check("附件头带 UTF-8 文件名（RFC 5987）", "filename*=UTF-8''" in dl_head, dl_head[:80])
+    check("附件响应的长度与文件一致", int(dl_len or 0) == os.path.getsize(media_path),
+          f"{dl_len} vs {os.path.getsize(media_path)}")
+    check("附件响应内容正确", dl_first == real[:2048], f"{len(dl_first)} 字节")
+    with urllib.request.urlopen(media_url("/_media/", media_path) + "?x=1", timeout=60) as res:
+        plain_head = res.headers.get("Content-Disposition") or ""
+    check("普通播放请求没有附件头（不影响预览）", "attachment" not in plain_head, plain_head[:40])
 
     print("\n== 6. 时间轴抓帧 ==")
     try:

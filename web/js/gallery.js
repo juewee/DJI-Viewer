@@ -28,6 +28,58 @@ export function initGallery(handlers) {
   onVisibilityChange = handlers.onVisibility || onVisibilityChange;
 }
 
+// ------------------------------------------------- 拖出到资源管理器 = 复制文件
+const MIME_BY_EXT = {
+  '.mp4': 'video/mp4',
+  '.lrf': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.dng': 'image/x-adobe-dng',
+  '.png': 'image/png',
+};
+
+function mimeOf(name) {
+  const dot = String(name).lastIndexOf('.');
+  return MIME_BY_EXT[String(name).slice(dot).toLowerCase()] || 'application/octet-stream';
+}
+
+/**
+ * 拖拽卡片到资源管理器 = 复制该文件。
+ *
+ * 浏览器不允许网页直接交出本地文件句柄，所以走 Chromium 的约定：
+ *   dataTransfer.setData('DownloadURL', 'mime:文件名:绝对URL')
+ * 拖到资源管理器松手后，浏览器按该 URL 取一份（服务端带 Content-Disposition: attachment），
+ * 落盘成同名文件，资源管理器再把它复制/移动到你松手的位置。
+ * 服务就在本机，这条链路是磁盘速度；但**大文件需要先取一份副本**，
+ * 所以超大素材更建议用「定位文件」直接在资源管理器里拖。
+ */
+function attachDragOut(node, clip) {
+  node.setAttribute('draggable', 'true');
+  node.addEventListener('dragstart', (e) => {
+    const file = clip.video_path || clip.photo_path || clip.proxy_path || clip.path;
+    if (!file || !e.dataTransfer) return;
+    const name = String(file).split(/[\\/]/).pop() || clip.name;
+    // DownloadURL 需要绝对 URL；拿不到 location 时（测试环境）退回带占位主机的形式
+    let url = api.download(file);
+    try {
+      const origin = (typeof location !== 'undefined' && location.origin) || 'http://127.0.0.1';
+      url = new URL(url, origin).href;
+    } catch (_) { /* 保持相对路径 */ }
+    try {
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('DownloadURL', `${mimeOf(name)}:${name}:${url}`);
+      e.dataTransfer.setData('text/plain', file);   // 拖进输入框/聊天框就是路径
+    } catch (_) { /* 老浏览器不支持就算了，text/plain 还能兜底 */ }
+    const img = node.querySelector('.thumb img');
+    if (img && e.dataTransfer.setDragImage) {
+      try { e.dataTransfer.setDragImage(img, 60, 34); } catch (_) { /* 忽略 */ }
+    }
+    node.classList.add('dragging');
+  });
+  node.addEventListener('dragend', () => node.classList.remove('dragging'));
+}
+
 // ------------------------------------------------------------------ 卡片
 /** 缩略图上的角标 + 时长 + LRF 标记（元数据到达时可局部刷新，不重建整卡） */
 function fillThumbOverlay(thumb, clip) {
@@ -158,6 +210,7 @@ function buildCard(clip) {
     onOpen(clip);
   });
   card.addEventListener('dblclick', () => api.open(clip.video_path || clip.path).catch(() => {}));
+  attachDragOut(card, clip);
   return card;
 }
 
@@ -285,6 +338,8 @@ function buildBurstCard(item) {
   });
   stack.appendChild(card);
   attachBurstHover(card, item);
+  // 连拍组拖出 → 拖的是封面那张（DownloadURL 一次只能带一个文件）
+  attachDragOut(card, cover);
   return stack;
 }
 

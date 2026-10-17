@@ -467,6 +467,12 @@ globalThis.URL.createObjectURL = () => 'blob:stub';
 globalThis.URL.revokeObjectURL = () => {};
 globalThis.MediaSource = undefined; // 触发「不支持转码流」的降级分支
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+// 浏览器标准 API：拖出用 DownloadURL 拼绝对地址
+globalThis.location = {
+  href: 'http://127.0.0.1:8799/', origin: 'http://127.0.0.1:8799',
+  protocol: 'http:', host: '127.0.0.1:8799', pathname: '/', search: '', hash: '',
+  assign() {}, replace() {}, reload() {}, toString() { return this.href; },
+};
 // 浏览器标准 API：连拍卡片用 new Image() 预加载下一帧（桩里立即"加载完成"）
 globalThis.Image = class Image {
   constructor() {
@@ -920,6 +926,65 @@ try {
     rawById('gallery').querySelectorAll('.card-stack.burst').length === burstGroups);
 } catch (err) {
   ok('连拍展示', false, err.message);
+}
+
+console.log('\n== 9.6 拖出到资源管理器（DownloadURL） ==');
+try {
+  // DataTransfer 的桩：只记录 setData 的内容
+  function makeDataTransfer() {
+    const data = new Map();
+    return {
+      data,
+      effectAllowed: 'all',
+      dropEffect: 'none',
+      types: [],
+      setData(type, value) { data.set(type, String(value)); this.types = [...data.keys()]; },
+      getData(type) { return data.get(type) || ''; },
+      setDragImage() {},
+      clearData() { data.clear(); },
+    };
+  }
+  const cards = rawById('gallery').querySelectorAll('.card');
+  ok('卡片被标记为可拖拽', cards.every((c) => c.getAttribute('draggable') === 'true'),
+    `${cards.filter((c) => c.getAttribute('draggable') === 'true').length}/${cards.length} 张`);
+
+  const firstCard = cards[0];
+  const clip = fixture.clips.find((c) => c.id === firstCard.dataset.id) || fixture.clips[0];
+  const expectFile = clip.video_path || clip.photo_path || clip.proxy_path || clip.path;
+  const expectName = String(expectFile).split(/[\\/]/).pop();
+  const dt = makeDataTransfer();
+  wrapEl(firstCard).dispatch('dragstart', { dataTransfer: dt });
+
+  const dl = dt.getData('DownloadURL');
+  ok('拖拽时写入了 DownloadURL', !!dl, dl ? dl.slice(0, 70) : '空');
+  const parts = String(dl).split(':');
+  ok('DownloadURL 是 mime:文件名:URL 三段式',
+    parts.length >= 3 && parts[1] === expectName, `mime=${parts[0]} name=${parts[1]}`);
+  ok('DownloadURL 的 mime 与扩展名匹配',
+    /^(video\/mp4|video\/quicktime|image\/jpeg|image\/x-adobe-dng)$/.test(parts[0]), parts[0]);
+  const dlUrl = parts.slice(2).join(':');
+  ok('DownloadURL 指向本服务且带 dl=1',
+    /^https?:\/\/[^/]+\/_media\//.test(dlUrl) && dlUrl.includes('dl=1'),
+    dlUrl.replace(/^https?:\/\/[^/]+/, '').slice(0, 60));
+  ok('同时写入纯文本路径（拖进输入框可用）',
+    dt.getData('text/plain') === expectFile, dt.getData('text/plain').slice(-40));
+  ok('效果标记为复制', dt.effectAllowed === 'copy', dt.effectAllowed);
+  ok('拖拽中卡片有 dragging 类', firstCard.classList.contains('dragging'));
+  wrapEl(firstCard).dispatch('dragend', {});
+  ok('拖拽结束后清掉 dragging 类', !firstCard.classList.contains('dragging'));
+
+  // 连拍组卡片拖的是封面那张
+  const stackCard = rawById('gallery').querySelectorAll('.card-stack.burst')[0];
+  if (stackCard) {
+    const dt2 = makeDataTransfer();
+    wrapEl(stackCard.querySelector('.card')).dispatch('dragstart', { dataTransfer: dt2 });
+    ok('连拍组卡片也能拖出（取封面帧）', !!dt2.getData('DownloadURL'),
+      String(dt2.getData('DownloadURL')).split(':')[1] || '空');
+  } else {
+    ok('连拍组卡片也能拖出（取封面帧）', true, '当前没有连拍组');
+  }
+} catch (err) {
+  ok('拖出到资源管理器', false, err.message);
 }
 
 console.log('\n== 10. 转存弹窗 ==');

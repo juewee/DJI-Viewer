@@ -397,6 +397,12 @@ input[type=range] { accent-color: var(--accent-2); }
 .burst-expand:hover { border-color: var(--accent); color: var(--accent); }
 .card.burst.partial { border-color: rgba(63, 199, 255, .55); }
 
+/* 拖出到资源管理器：整张卡变淡，表示"正在拖一份拷贝" */
+.card[draggable="true"] { -webkit-user-drag: element; }
+.card[draggable="true"]:active { cursor: grabbing; }
+.card.dragging { opacity: .5; }
+.card.dragging:hover { transform: none; }
+
 /* ---- 抽屉里的连拍胶片条 ---- */
 .burst-strip { padding: 0 0 12px; }
 .burst-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }

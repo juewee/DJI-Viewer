@@ -257,7 +257,7 @@ def enqueue(paths: "list[str]", generation: str = "") -> int:
         added = 0
         for p in paths:
             k = path_key(p)
-            if k in _queued or k in _running:
+            if k in _queued or p in _running:
                 continue
             _queued.add(k)
             if _thumb_ready(p):
@@ -279,7 +279,7 @@ def warm_thumbs(paths: "list[str]") -> int:
         added = 0
         for p in paths:
             k = path_key(p)
-            if k in _queued or k in _running or _thumb_ready(p):
+            if k in _queued or p in _running or _thumb_ready(p):
                 continue
             _queued.add(k)
             _thumb_queue.append(p)
@@ -303,13 +303,13 @@ def _pump() -> None:
     batch: "list[tuple[str, str]]" = []
     with _LOCK:
         for path in _thumb_queue:
-            _running[path] = _running.get(path, 0) + 1
+            _running[path] = time.time()
             batch.append((path, "thumb"))
         _thumb_queue.clear()
         thumbs_done = _thumb_progress["done"] >= _thumb_progress["total"]
         if thumbs_done:
             for path in _analyze_queue:
-                _running[path] = _running.get(path, 0) + 1
+                _running[path] = time.time()
                 batch.append((path, "analyze"))
             _analyze_queue.clear()
         _progress["active"] = len(_running)
@@ -337,12 +337,16 @@ def _task(path: str, kind: str) -> None:
                 _progress["failed"] += 1
     finally:
         with _LOCK:
-            left = _running.get(path, 1) - 1
-            if left > 0:
-                _running[path] = left
+            if kind == "thumb":
+                # 出完图还没分析：去重标记要留着，否则同一条会被重复排进分析队列
+                still = path in _analyze_queue
             else:
-                _running.pop(path, None)
-                _queued.discard(path)
+                still = False
+            _running.pop(path, None)
+            if not still:
+                # _queued 里存的是 path_key，这里必须用同一个键去清，否则这条路径
+                # 会永远卡在"已入队"状态，同一个进程里再也排不进队列
+                _queued.discard(path_key(path))
             _progress["active"] = len(_running)
             thumbs_finished = (kind == "thumb" and
                                _thumb_progress["done"] >= _thumb_progress["total"])

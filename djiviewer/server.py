@@ -98,6 +98,14 @@ def resolve_media_path(raw: str) -> Path:
     return p
 
 
+def _disposition(name: str) -> str:
+    """附件头：ASCII 兜底 + RFC 5987 的 UTF-8 文件名（中文名才不会乱码）。"""
+    ascii_name = name.encode("ascii", "ignore").decode("ascii") or "download"
+    ascii_name = ascii_name.replace('"', "")
+    return (f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{urllib.parse.quote(name, safe='')}")
+
+
 def _guess_type(path: Path) -> str:
     ext = path.suffix.lower()
     if ext in (".mp4", ".m4v"):
@@ -255,8 +263,9 @@ class Handler(BaseHTTPRequestHandler):
             # analyze=0：只出图，不预先 ffprobe（按需分析，避免扫描后 CPU 打满）
             analyze = q.get("analyze")
             auto_analyze = True if analyze is None else analyze not in ("0", "false", "False", "")
+            queued = 0
             if auto_analyze and result["needs_probe"]:
-                cache.enqueue(result["needs_probe"], generation=str(p))
+                queued = cache.enqueue(result["needs_probe"], generation=str(p))
             # 参数已缓存、但还没有缩略图的素材：单独排进"出图"队列（纯复制，很轻）
             need_thumb = [
                 c.get("video_path") or c.get("photo_path") or c.get("proxy_path") or c.get("path")
@@ -266,6 +275,7 @@ class Handler(BaseHTTPRequestHandler):
             if need_thumb:
                 cache.warm_thumbs(need_thumb)
             result["auto_analyze"] = auto_analyze
+            result["queued_for_analysis"] = queued   # 本次扫描真正排进分析队列的文件数
             result["progress"] = cache.progress()
             return self._json(result)
 
@@ -612,7 +622,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(500, str(exc))
         if size == 0:
             return self._error(409, "文件为 0 字节，无法播放")
-        self._stream_range(p, size, _guess_type(p), method)
+        # dl=1：以附件形式返回，供"从浏览器拖到资源管理器"时浏览器正确落盘
+        extra = {}
+        if req["query"].get("dl") in ("1", "true", "True"):
+            extra["Content-Disposition"] = _disposition(p.name)
+        self._stream_range(p, size, _guess_type(p), method, extra=extra)
 
     def _serve_live(self, req: dict, method: str) -> None:
         """实时转码流（fMP4），用于浏览器无法直接解码的素材。"""
@@ -638,7 +652,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     # ------------------------------------------------------ Range 发送
-    def _stream_range(self, p: Path, size: int, ctype: str, method: str) -> None:
+    def _stream_range(self, p: Path, size: int, ctype: str, method: str,
+                      extra: Optional[dict] = None) -> None:
         start, end = 0, size - 1
         partial = False
         rng = self.headers.get("Range")
@@ -668,6 +683,8 @@ class Handler(BaseHTTPRequestHandler):
             if partial:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Cache-Control", "no-store")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             if method == "HEAD":
                 return

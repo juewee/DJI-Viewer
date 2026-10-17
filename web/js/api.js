@@ -57,6 +57,8 @@ export const api = {
   thumb: (name, clipPath) =>
     `/_thumb/${encodeURIComponent(name)}${clipPath ? `?path=${encodeURIComponent(clipPath)}` : ''}`,
   media: (path) => `/_media/${pathSeg(path)}`,
+  /** 附件形式（Content-Disposition: attachment），供拖到资源管理器时浏览器落盘 */
+  download: (path) => `/_media/${pathSeg(path)}?dl=1`,
   live: (path) => `/_live/${pathSeg(path)}`,
   photo: (path) => `/_photo/${pathSeg(path)}`,
 

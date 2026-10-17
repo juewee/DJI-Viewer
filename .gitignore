@@ -1,0 +1,27 @@
+# ---- 运行期缓存（缩略图、探测结果、设置、日志） ----
+cache/
+*.log
+*.err
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 测试用的素材快照 ----
+# 由 tools/dump_fixtures.py 从真实素材生成，含本机绝对路径，不入库
+tools/fixtures/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp
+
+# ---- 临时产物 ----
+_scr_sample.jpg
+_thm_sample.jpg
+port_test.*

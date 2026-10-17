@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DJI Footage Viewer · 大疆素材浏览器</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============================ 侧边栏 ============================ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="22" fill="none" stroke="url(#g1)" stroke-width="2.5"/>
+        <path d="M15 17v14M33 17v14M15 24h18" stroke="url(#g1)" stroke-width="3.4"
+              stroke-linecap="round" fill="none"/>
+        <circle cx="24" cy="24" r="3.2" fill="#35e0ff"/>
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#5ef2ff"/>
+            <stop offset="100%" stop-color="#2f7dff"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <div class="brand-text">
+        <div class="brand-title">DJI FOOTAGE</div>
+        <div class="brand-sub">VIEWER · 素材浏览器 <span class="mono" id="build-tag"></span></div>
+      </div>
+      <button class="icon-btn" id="btn-collapse" title="收起侧栏 (Ctrl+B)" aria-label="收起侧栏">
+        <svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
+    <div class="side-block">
+      <div class="side-label">素材目录</div>
+      <div class="folder-box">
+        <input id="folder-input" class="input mono" type="text" spellcheck="false"
+               placeholder="例如 G:\DCIM\DJI_001 或 /Volumes/NO NAME/DCIM">
+        <button class="btn primary block" id="btn-scan">
+          <svg viewBox="0 0 16 16" class="ic"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+          扫描目录
+        </button>
+      </div>
+      <div class="quick-roots" id="quick-roots"></div>
+      <label class="checkline" title="包含子目录（DJI_001、DJI_002 …）">
+        <input type="checkbox" id="chk-recursive" checked><span>包含子目录</span>
+      </label>
+    </div>
+
+    <div class="side-block">
+      <div class="side-label">
+        <span>拍摄日期</span>
+        <span class="side-label-actions">
+          <button class="link-btn" id="btn-date-select">选中这些日期</button>
+          <button class="link-btn" id="btn-date-invert">反选</button>
+        </span>
+      </div>
+      <div class="date-hint">点日期=按该日筛选 · 点勾选框=选中该日素材</div>
+      <div class="date-tree" id="date-tree">
+        <div class="empty-hint">扫描后按日期归类显示</div>
+      </div>
+    </div>
+
+    <div class="side-block side-stats">
+      <div class="side-label">素材概览</div>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat"><span class="stat-k">条目</span><b id="st-clips">-</b></div>
+        <div class="stat"><span class="stat-k">总大小</span><b id="st-size">-</b></div>
+        <div class="stat"><span class="stat-k">总时长</span><b id="st-dur">-</b></div>
+        <div class="stat"><span class="stat-k">天数</span><b id="st-days">-</b></div>
+        <div class="stat"><span class="stat-k">含 LRF</span><b id="st-lrf">-</b></div>
+        <div class="stat"><span class="stat-k">连拍</span><b id="st-burst">-</b></div>
+        <div class="stat"><span class="stat-k">已分析</span><b id="st-probed">-</b></div>
+      </div>
+      <div class="res-bars" id="res-bars"></div>
+      <div class="side-foot">
+        <button class="link-btn" id="btn-info">关于 / 环境</button>
+        <button class="link-btn danger" id="btn-purge">清空缓存</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================ 主区域 ============================ -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-collapsed" id="btn-expand" title="展开侧栏">
+        <svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+
+      <div class="search-wrap">
+        <svg class="search-ic" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input id="search" class="input search" type="search" placeholder="搜索文件名 / 序号 / 日期（按 / 聚焦）" spellcheck="false">
+        <kbd class="kbd">/</kbd>
+      </div>
+
+      <div class="filter-chips" id="quick-chips">
+        <button class="chip" data-quick="all">全部</button>
+        <button class="chip" data-quick="4k">4K 及以上</button>
+        <button class="chip" data-quick="8k">8K</button>
+        <button class="chip" data-quick="60">≥ 60fps</button>
+        <button class="chip" data-quick="long">时长 ≥ 1 分钟</button>
+        <button class="chip" data-quick="big">体积 ≥ 500MB</button>
+        <button class="chip" data-quick="today">今天</button>
+      </div>
+
+      <button class="btn ghost" id="btn-filters">
+        <svg viewBox="0 0 16 16" class="ic"><path d="M2 4h12M4.5 8h7M6.5 12h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+        筛选<b class="badge" id="filter-count">0</b>
+      </button>
+
+      <div class="spacer"></div>
+
+      <div class="probe-meter" id="probe-meter" hidden>
+        <div class="probe-bar"><i id="probe-bar-fill"></i></div>
+        <span class="probe-text mono" id="probe-text">分析中…</span>
+      </div>
+
+      <label class="size-ctl" title="缩略图尺寸">
+        <svg viewBox="0 0 16 16" class="ic"><rect x="2.2" y="2.2" width="6" height="6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="2.2" y="9.6" width="6" height="4.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="9.8" y="2.2" width="4" height="11.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        <input type="range" id="thumb-size" min="150" max="440" step="10" value="264">
+      </label>
+
+      <select class="select" id="sort">
+        <option value="time-desc">拍摄时间 ↓</option>
+        <option value="time-asc">拍摄时间 ↑</option>
+        <option value="size-desc">文件大小 ↓</option>
+        <option value="size-asc">文件大小 ↑</option>
+        <option value="dur-desc">时长 ↓</option>
+        <option value="name-asc">文件名 ↑</option>
+      </select>
+
+      <button class="icon-btn" id="btn-refresh" title="重新扫描 (F5)">
+        <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.2V5.4h-3.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+
+    <!-- 筛选面板 -->
+    <section class="filter-bar" id="filter-bar" hidden>
+      <div class="fgroup">
+        <div class="flabel">分辨率</div>
+        <div class="chips" id="f-res"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">帧率</div>
+        <div class="chips" id="f-fps"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">编码</div>
+        <div class="chips" id="f-codec"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">类型</div>
+        <div class="chips">
+          <button class="chip tgl" data-type="video">视频</button>
+          <button class="chip tgl" data-type="photo">照片</button>
+          <button class="chip tgl" data-type="proxy">仅 LRF</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">属性</div>
+        <div class="chips">
+          <button class="chip tgl" data-attr="hdr">HDR / 10bit</button>
+          <button class="chip tgl" data-attr="hasProxy">有 LRF 预览</button>
+          <button class="chip tgl" data-attr="noProxy">无 LRF</button>
+          <button class="chip tgl" data-attr="audio">含音频</button>
+          <button class="chip tgl" data-attr="empty">异常 / 空文件</button>
+          <button class="chip tgl" data-attr="unprobed">未分析</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">连拍</div>
+        <div class="chips">
+          <label class="chip tgl" id="lbl-burst" title="把连拍照片（_001…_010）折叠成一组一张卡">
+            <input type="checkbox" id="chk-burst" checked><span>合并成组</span>
+          </label>
+        </div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">参数分析</div>
+        <div class="chips">
+          <select class="select sm" id="sel-analyze"
+                  title="读分辨率/帧率/编码/时长需要逐个跑 ffprobe；全量会占满 CPU，所以默认按需">
+            <option value="on-open">点开才分析</option>
+            <option value="viewport">只分析屏幕里的</option>
+            <option value="all">全部分析</option>
+          </select>
+          <button class="chip tgl" id="btn-analyze-visible" title="分析当前屏幕上显示出来的素材">分析可见</button>
+          <button class="chip tgl" id="btn-analyze-all" title="把这批素材的参数全部读一遍（会占一会儿 CPU）">全部分析</button>
+        </div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">时长 ≥ <b id="f-dur-val">0s</b></div>
+        <input type="range" id="f-dur" min="0" max="600" step="5" value="0" class="range">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">体积 ≥ <b id="f-size-val">0MB</b></div>
+        <input type="range" id="f-size" min="0" max="2048" step="16" value="0" class="range">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">日期范围</div>
+        <div class="daterange">
+          <select class="select sm" id="f-date-from"></select>
+          <span class="dash">→</span>
+          <select class="select sm" id="f-date-to"></select>
+        </div>
+      </div>
+      <div class="fgroup grow end">
+        <button class="btn ghost" id="btn-filter-reset">重置筛选</button>
+      </div>
+    </section>
+
+    <!-- 批量操作条 -->
+    <section class="selbar" id="selbar" hidden>
+      <span class="selcount"><b id="sel-n">0</b> 项已选 <span class="mono" id="sel-size"></span>
+        <span class="mono dim" id="sel-src"></span></span>
+      <div class="sel-quick">
+        <button class="btn ghost sm" id="sel-all-filtered">☑ 选中筛选结果</button>
+        <button class="btn ghost sm" id="sel-invert">⇄ 反选</button>
+        <button class="btn ghost sm" id="sel-clear">✕ 取消选择</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn primary sm" id="sel-export">转存原始素材…</button>
+      <button class="btn ghost sm" id="sel-csv">导出 CSV</button>
+      <button class="btn ghost sm" id="sel-reveal">在资源管理器中显示</button>
+      <button class="btn danger sm" id="sel-delete">删除文件…</button>
+    </section>
+
+    <!-- 画廊 -->
+    <section class="gallery-wrap" id="gallery-wrap">
+      <div class="gallery" id="gallery"></div>
+      <div class="placeholder" id="placeholder">
+        <svg viewBox="0 0 64 64" class="ph-ic"><circle cx="32" cy="32" r="26" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="5 6"/><path d="M22 24v16M42 24v16M22 32h20" stroke="currentColor" stroke-width="3" stroke-linecap="round" fill="none"/></svg>
+        <h2>还没选择素材目录</h2>
+        <p>在左侧填入大疆存储卡的 DCIM 目录（例如 <code class="mono">G:\DCIM\DJI_001</code>），或点击下方快捷入口。<br>
+           扫描只读目录结构，缩略图与参数在后台自动分析，不会修改任何原始文件。</p>
+        <div class="ph-actions" id="ph-roots"></div>
+      </div>
+    </section>
+
+    <footer class="statusbar">
+      <span id="status-left" class="mono">就绪</span>
+      <div class="spacer"></div>
+      <span id="status-right" class="mono"></span>
+    </footer>
+  </main>
+
+  <!-- ============================ 详情 / 预览抽屉 ============================ -->
+  <aside class="drawer" id="drawer" hidden>
+    <div class="drawer-head">
+      <div class="drawer-title">
+        <b id="d-name">—</b>
+        <span class="mono dim" id="d-sub"></span>
+      </div>
+      <div class="drawer-tools">
+        <button class="icon-btn" id="d-prev" title="上一条 (←)"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="icon-btn" id="d-next" title="下一条 (→)"><svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="icon-btn" id="d-close" title="关闭 (Esc)"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+      </div>
+    </div>
+
+    <div class="player-shell" id="player-shell">
+      <video id="player" controls playsinline preload="metadata"></video>
+      <img id="photo-view" alt="" hidden>
+      <div class="player-fallback" id="player-fallback" hidden>
+        <div class="fb-title">浏览器无法直接解码这段素材</div>
+        <div class="fb-body" id="fb-body"></div>
+        <div class="fb-diag mono" id="fb-diag"></div>
+        <div class="fb-actions">
+          <button class="btn primary sm" id="fb-lrf">改用 LRF 预览</button>
+          <button class="btn ghost sm" id="fb-live">实时转码播放 (720p)</button>
+        </div>
+      </div>
+      <div class="player-loading" id="player-loading" hidden><i></i><span>加载中…</span></div>
+    </div>
+
+    <div class="player-bar">
+      <div class="seg" id="src-seg">
+        <button class="seg-btn" data-src="mp4">原始 MP4</button>
+        <button class="seg-btn" data-src="lrf">LRF 预览</button>
+        <button class="seg-btn" data-src="live">实时转码</button>
+      </div>
+      <span class="seg-hint" id="seg-hint"></span>
+      <label class="checkline sm" title="自动优先使用 LRF（更省带宽、秒开）">
+        <input type="checkbox" id="chk-autolrf"><span>优先 LRF</span>
+      </label>
+      <div class="spacer"></div>
+      <button class="btn ghost sm" id="d-open">外部播放器</button>
+      <button class="btn ghost sm" id="d-reveal">定位文件</button>
+      <button class="btn ghost sm" id="d-copy">复制路径</button>
+    </div>
+
+    <div class="drawer-body">
+      <div class="burst-strip" id="d-burst" hidden>
+        <div class="burst-head">
+          <span class="flabel" id="d-burst-label">连拍</span>
+          <span class="burst-hint">← → 逐张查看</span>
+        </div>
+        <div class="filmstrip" id="d-burst-inner"></div>
+      </div>
+      <div class="kvs" id="d-kvs"></div>
+      <div class="files" id="d-files"></div>
+      <div class="thumb-strip" id="d-strip">
+        <div class="flabel">时间轴抓帧（点击跳到该时间点）</div>
+        <div class="strip" id="strip-inner"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================ 转存（导出）弹窗 ============================ -->
+  <div class="modal-mask" id="export-modal" hidden>
+    <div class="modal modal-export">
+      <div class="modal-head">
+        <b>转存 / 导出原始素材</b>
+        <span class="mono dim" id="ex-count"></span>
+        <button class="icon-btn" id="ex-close" title="关闭 (Esc)">
+          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="modal-body ex-body">
+        <div class="ex-note" id="ex-note"></div>
+
+        <div class="ex-row">
+          <label class="ex-label" for="ex-dest">目标文件夹</label>
+          <div class="ex-destline">
+            <input class="input mono" id="ex-dest" type="text" spellcheck="false"
+                   placeholder="例如 H:\导出 或 G:\DCIM\_export">
+            <button class="btn ghost sm" id="ex-browse">浏览…</button>
+          </div>
+        </div>
+        <div class="ex-cands" id="ex-cands"></div>
+
+        <div class="ex-browser" id="ex-browser" hidden>
+          <div class="ex-br-head">
+            <button class="icon-btn" id="ex-up" title="上一层">
+              <svg viewBox="0 0 16 16"><path d="M8 12.5V4M4.4 7.6 8 4l3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <span class="mono ex-br-path" id="ex-br-path">—</span>
+            <span class="mono dim" id="ex-br-info"></span>
+            <button class="btn ghost sm" id="ex-br-use">用这个文件夹</button>
+          </div>
+          <div class="ex-br-roots" id="ex-br-roots"></div>
+          <div class="ex-br-list" id="ex-br-list"></div>
+        </div>
+
+        <div class="ex-opts">
+          <label class="checkline sm"><input type="checkbox" id="ex-by-date" checked><span>按日期建子文件夹</span></label>
+          <label class="checkline sm"><input type="checkbox" id="ex-keep-dir"><span>保留原目录名（DJI_001）</span></label>
+          <label class="checkline sm"><input type="checkbox" id="ex-manifest" checked><span>写导出清单 CSV</span></label>
+          <label class="checkline sm"><span>重名时</span>
+            <select class="select sm" id="ex-conflict">
+              <option value="overwrite">覆盖</option>
+              <option value="skip">跳过</option>
+              <option value="rename">自动改名</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="ex-plan" id="ex-plan"></div>
+        <div class="ex-progress" id="ex-progress">
+          <div class="ex-bar"><i id="ex-bar-fill"></i></div>
+          <div class="ex-progress-text mono" id="ex-progress-text"></div>
+          <div class="ex-failures" id="ex-failures" hidden></div>
+          <div class="ex-log mono" id="ex-log"></div>
+        </div>
+      </div>
+
+      <div class="modal-foot">
+        <span class="mono dim" id="ex-status"></span>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="ex-preview">预览清单</button>
+        <button class="btn ghost" id="ex-stop" hidden>停止</button>
+        <button class="btn primary" id="ex-start" disabled>开始转存</button>
+        <button class="btn ghost" id="ex-reveal" hidden>打开目标文件夹</button>
+        <button class="btn primary" id="ex-done" hidden>完成</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="boot-msg" class="boot-msg"></div>
+<div class="snackbar" id="snackbar" hidden></div>
+</div>
+
+<script>
+// 兜底提示：前端模块若加载/执行失败，界面绝不能只是"点了没反应"
+(function () {
+  var box = document.getElementById('boot-msg');
+  function show(title, detail) {
+    if (!box) return;
+    box.innerHTML = '<b>' + title + '</b><span>' + detail + '</span>';
+    box.hidden = false;
+  }
+  window.addEventListener('error', function (e) {
+    if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
+      show('前端资源加载失败', '（' + (e.target.src || e.target.href) + '）请强制刷新页面 Ctrl+F5，'
+        + '并确认服务窗口没有报错。');
+    } else if (e.message) {
+      show('前端脚本出错', e.message + (e.filename ? '（' + e.filename.split('/').pop() + ':' + e.lineno + '）' : ''));
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var msg = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+    show('前端请求出错', msg + '　—— 请确认服务窗口仍在运行。');
+  });
+  setTimeout(function () {
+    if (box && !box.hidden) return;
+    if (!window.__djiViewerReady) {
+      show('界面脚本没有启动', '模块可能加载失败。请强制刷新（Ctrl+F5）；若仍如此，'
+        + '请把浏览器控制台（F12）的红色报错发我。');
+    }
+  }, 6000);
+})();
+</script>
+<script type="module" src="/js/app.js"></script>
+<script>
+// 静态资源版本戳占位：服务端返回首页时会替换成真实版本号（源码 mtime）。
+// 服务端没注入（例如直接打开本地文件）时保持 null，功能不受影响。
+window.__assetVersion = /*ASSET_VERSION*/null;
+</script>
+<script type="module">
+const v = window.__assetVersion;
+import(v ? '/js/app.js?v=' + v : '/js/app.js');
+</script>
+</body>
+</html>

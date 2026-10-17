@@ -1,0 +1,20 @@
+# 统一换行符：.bat 必须是 CRLF，否则 cmd.exe 解析括号块会失败（"一闪而过"的元凶）
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 源码统一 LF
+*.py    text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# 二进制，别做任何换行转换
+*.jpg   binary
+*.png   binary
+*.ico   binary
+*.mp4   binary
+*.lrf   binary

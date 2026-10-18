@@ -106,6 +106,7 @@ function readOpts() {
     keepDirName: $('#ex-keep-dir').checked,
     manifest: $('#ex-manifest').checked,
     conflict: $('#ex-conflict').value,
+    lut: !!($('#ex-lut') && $('#ex-lut').checked),
   };
 }
 
@@ -238,15 +239,21 @@ function startPolling() {
 }
 
 function renderProgress(job) {
-  const pct = job.bytes_total ? Math.min(100, (job.bytes_written ?? job.bytes_done) / job.bytes_total * 100)
-    : (job.total ? (job.done / job.total) * 100 : 0);
+  // 百分比以服务端为准：色彩还原导出是重新编码，输出体积和源文件对不上，
+  // 前端自己按字节算会永远停在 30~40%
+  const pct = Number.isFinite(job.progress) ? job.progress
+    : (job.bytes_total
+      ? Math.min(100, ((job.bytes_written ?? job.bytes_done) / job.bytes_total) * 100)
+      : (job.total ? (job.done / job.total) * 100 : 0));
   $('#ex-bar-fill').style.width = `${pct.toFixed(1)}%`;
   const written = job.bytes_written ?? job.bytes_done;
-  const bits = [
-    `${job.done}/${job.total} 个文件`,
-    `${fmtSize(written)} / ${fmtSize(job.bytes_total)}`,
-    `${pct.toFixed(1)}%`,
-  ];
+  const bits = [`${job.done}/${job.total} 个文件`];
+  if (job.mode === 'transcode') {
+    bits.push(`已写出 ${fmtSize(written)}`);
+  } else {
+    bits.push(`${fmtSize(written)} / ${fmtSize(job.bytes_total)}`);
+  }
+  bits.push(`${pct.toFixed(1)}%`);
   if (job.speed_label && job.speed_label !== '-') bits.push(job.speed_label);
   if (job.status === 'running' && job.eta_label) bits.push(`剩余约 ${job.eta_label}`);
   bits.push(`已用时 ${job.elapsed}s`);
@@ -299,6 +306,7 @@ function finish(job) {
   currentJob = null;
   $('#ex-stop').hidden = true;
   $('#ex-preview').disabled = false;
+  renderProgress(job);          // 让进度条走到实际值（100% / 取消时的真实进度）
   if (job.status === 'done') {
     toast(`转存完成：${job.done} 个文件${job.failed ? `，失败 ${job.failed}` : ''}`);
   } else if (job.status === 'cancelled') {
@@ -331,7 +339,7 @@ export function initExporter() {
   $('#ex-done').addEventListener('click', () => { $('#export-modal').hidden = true; });
   $('#ex-dest').addEventListener('input', refreshPlan);
   $('#ex-dest').addEventListener('keydown', (e) => { if (e.key === 'Enter') refreshPlan(); });
-  ['#ex-by-date', '#ex-keep-dir', '#ex-conflict', '#ex-manifest'].forEach((sel) => {
+  ['#ex-by-date', '#ex-keep-dir', '#ex-conflict', '#ex-manifest', '#ex-lut'].forEach((sel) => {
     $(sel).addEventListener('change', refreshPlan);
   });
   $('#ex-preview').addEventListener('click', refreshPlan);

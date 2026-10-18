@@ -24,6 +24,7 @@ const LS = {
   autoLrf: 'dji.autoLrf',
   burst: 'dji.mergeBursts',
   analyze: 'dji.analysisMode',
+  lut: 'dji.lutEnabled',
   collapsed: 'dji.sidebarCollapsed',
 };
 
@@ -119,7 +120,10 @@ function renderFacets() {
     if (!btn.dataset.bound) {
       btn.dataset.bound = '1';
       btn.addEventListener('click', () => {
-        f[key].has(val) ? f[key].delete(val) : f[key].add(val);
+        // 注意：必须取 store.filter，不能用渲染时捕获的 f——
+        // 「重置筛选」会整体替换 store.filter，捕获旧对象会让芯片从此失效
+        const live = store.filter;
+        live[key].has(val) ? live[key].delete(val) : live[key].add(val);
         renderAll();
       });
     }
@@ -673,6 +677,14 @@ function initControls() {
   });
   $('#btn-analyze-visible').addEventListener('click', analyzeVisible);
   $('#btn-analyze-all').addEventListener('click', analyzeAll);
+  $('#chk-lut').addEventListener('change', (e) => {
+    store.lutEnabled = e.target.checked;
+    localStorage.setItem(LS.lut, store.lutEnabled ? '1' : '');
+    // 只影响播放预览：D-Log 视频会自动改用带 LUT 的实时转码，缩略图不动
+    const clip = store.current;
+    if (clip) renderDrawer(clip);
+    toast(store.lutEnabled ? '色彩还原已开启：播放走带 LUT 的实时转码' : '色彩还原已关闭');
+  });
 
   $('#search').addEventListener('input', debounce((e) => {
     store.filter.text = e.target.value;
@@ -863,11 +875,38 @@ async function boot() {
   store.analysisMode = localStorage.getItem(LS.analyze) || 'on-open';
   if (!ANALYSIS_LABEL[store.analysisMode]) store.analysisMode = 'on-open';
   $('#sel-analyze').value = store.analysisMode;
+  store.lutEnabled = localStorage.getItem(LS.lut) === '1';
+  $('#chk-lut').checked = store.lutEnabled;
 
   try {
     const info = await api.info();
     store.serverInfo = info;
     initRoots(info.roots);
+    // 没有 LUT 就把「色彩还原」置灰并说明
+    store.lutAvailable = !!(info.lut && info.lut.available);
+    const lutChip = $('#lbl-lut');
+    if (lutChip) {
+      const hasLut = store.lutAvailable;
+      const box = $('#chk-lut');
+      if (!hasLut) {
+        if (box) { box.disabled = true; box.checked = false; }
+        store.lutEnabled = false;
+        lutChip.classList.add('disabled');
+        lutChip.title = '项目目录里没找到 .cube LUT（放到 djiviewer/ 根目录或 luts/ 下即可）';
+      } else {
+        lutChip.title = `色彩还原：${info.lut.name}`;
+      }
+    }
+    // 导出弹窗里的「色彩还原」也只有找到 LUT 才可用
+    const exLut = $('#ex-lut');
+    if (exLut) {
+      exLut.disabled = !store.lutAvailable;
+      const line = $('#ex-lut-line');
+      if (line) {
+        line.classList.toggle('disabled', !store.lutAvailable);
+        if (!store.lutAvailable) line.title = '项目目录里没找到 .cube LUT';
+      }
+    }
     const tag = $('#build-tag');
     if (tag && info.build) tag.textContent = `· v${String(info.build).split('.').slice(-1)[0]}`;
     if (info.tools_error) toast(info.tools_error, 'err');

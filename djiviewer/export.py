@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import os
 import shutil
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from . import cache
+from . import ffmpeg as ffmod
 from .parser import format_size, parse_filename
 
 # 只导出这些（原片）；LRF 是预览代理、SCR/THM 是相机自带缩略图，都不导出
@@ -157,6 +160,19 @@ def build_plan(paths: "list[str]", dest: str, opts: dict) -> dict:
         warnings.append(
             f"目标磁盘可用空间不足：需要约 {format_size(total)}，可用 {format_size(free)}")
 
+    # 色彩还原导出：只对视频重新编码（照片本身颜色正常，不套 LUT）
+    want_lut = bool(opts.get("lut")) and bool(config.lut_rel())
+    video_items = [it for it in items if it["kind"] == "video" and not it["empty"]]
+    if want_lut:
+        if not video_items:
+            warnings.append("勾选的素材里没有视频，色彩还原导出不会改变任何文件")
+        else:
+            warnings.append(
+                f"色彩还原导出会**重新编码** {len(video_items)} 个视频（套 LUT 后 10bit HEVC），"
+                "耗时大约是拷贝的几倍，文件体积也会变化；照片直接拷贝不套 LUT")
+    for it in items:
+        it["transcode"] = bool(want_lut and it["kind"] == "video" and not it["empty"])
+
     return {
         "ok": True,
         "dest": str(dest_root),
@@ -166,6 +182,9 @@ def build_plan(paths: "list[str]", dest: str, opts: dict) -> dict:
         "conflict": conflict,
         "byDate": by_date,
         "keepDirName": keep_dir,
+        "lut": want_lut,
+        "lut_name": (config.lut_info().get("name") if want_lut else None),
+        "transcode_count": sum(1 for it in items if it["transcode"]),
         "items": items,
         "count": len(items),
         "total_size": total,
@@ -229,6 +248,10 @@ def start(paths: "list[str]", dest: str, opts: Optional[dict] = None) -> dict:
             "results": [],
             "in_flight": {},
             "cancel": False,
+            # 转码任务用「文件数 + 当前文件进度」算百分比：
+            # 重新编码后体积和源文件完全不同，按字节算永远到不了 100%
+            "mode": "transcode" if plan.get("transcode_count") else "copy",
+            "transcode_total": plan.get("transcode_count", 0),
             "manifest": str(Path(plan["dest"]) / "_export_manifest.csv") if opts.get("manifest") else None,
         }
         _jobs[job_id] = job
@@ -291,10 +314,24 @@ def _run(job_id: str, plan: dict, opts: dict) -> None:
                 dst = _unique_path(dst)
             with _jobs_lock:
                 job["current"] = item["name"]
-                # 记录在拷文件，progress() 靠它实时估算字节进度与速度
-                job.setdefault("in_flight", {})[item["name"]] = {"dst": str(dst), "size": item["size"]}
+                # 记录在处理的文件，progress() 靠它实时估算进度与速度。
+                # 转码时输出体积和源文件对不上，改用 ffmpeg 的 out_time 比例 frac 算百分比。
+                slot = {
+                    "dst": str(dst), "size": item["size"],
+                    "transcode": bool(item.get("transcode")), "frac": 0.0,
+                }
+                job.setdefault("in_flight", {})[item["name"]] = slot
+
+            def _on_prog(value, slot=slot):
+                with _jobs_lock:
+                    slot["frac"] = value
+
             try:
-                written = _copy_file(src, dst, lambda: job["cancel"])
+                if item.get("transcode"):
+                    # 色彩还原导出：重新编码并烘入 LUT（仅视频）
+                    written = _transcode_file(src, dst, lambda: job["cancel"], _on_prog)
+                else:
+                    written = _copy_file(src, dst, lambda: job["cancel"])
                 cancelled = False
             except _Cancelled:
                 # 拷贝途中被取消：删掉半截文件，避免留下不完整的素材
@@ -349,6 +386,111 @@ class _Cancelled(Exception):
     """拷贝途中收到取消请求。"""
 
 
+def _probe_duration(path: Path) -> float:
+    """拿素材时长（用于把 ffmpeg 的 out_time 换算成百分比）。"""
+    try:
+        meta = cache.get_meta(str(path))
+        dur = float((meta or {}).get("duration") or 0)
+        if dur > 0:
+            return dur
+    except Exception:
+        pass
+    try:
+        tools = config.find_tools()
+        proc = subprocess.run(
+            [tools["ffprobe"], "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, timeout=60, **config.no_window_kwargs())
+        return float((proc.stdout or b"0").decode("utf-8", "replace").strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def _transcode_file(src: Path, dst: Path, should_cancel=None, on_progress=None) -> int:
+    """套 LUT 重新编码（只用于视频）；先写 .part，成功后改名，避免半成品被当成成品。
+
+    on_progress(frac) 会把 ffmpeg 的 out_time 换算成 0~1 的进度——
+    转码后的文件大小和源文件对不上，光看字节数算百分比会永远到不了 100%。
+    """
+    tools = config.find_tools()
+    ff = tools.get("ffmpeg")
+    if not ff:
+        raise RuntimeError("找不到 ffmpeg，无法做色彩还原导出")
+    rel = config.lut_rel()
+    if not rel:
+        raise RuntimeError("没有可用的 LUT")
+    # 临时名保留原扩展名（放在后面会让 ffmpeg 猜不出容器格式）
+    tmp = dst.with_name(f"{dst.stem}.part{dst.suffix}")
+    duration = _probe_duration(src)
+    cmd = [
+        ff, "-hide_banner", "-nostdin", "-y", "-v", "error",
+        "-progress", "pipe:1", "-nostats",
+        "-i", str(src),
+        "-map", "0:v:0", "-map", "0:a?",
+        "-vf", f"lut3d={rel}",
+        *ffmod.lut_encode_args(),
+        "-c:a", "copy", "-movflags", "+faststart",
+        str(tmp),
+    ]
+    proc = subprocess.Popen(
+        cmd, cwd=str(config.ROOT),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **config.no_window_kwargs(),
+    )
+
+    def _pump_progress(stream=proc.stdout) -> None:
+        """把 ffmpeg 的 out_time_us 换算成 0~1 交给上层。"""
+        if not stream or not on_progress or duration <= 0:
+            return
+        try:
+            for raw in stream:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("out_time_us="):
+                    continue
+                try:
+                    us = int(line.split("=", 1)[1] or 0)
+                except ValueError:
+                    continue
+                on_progress(min(0.995, max(0.0, (us / 1e6) / duration)))
+        except Exception:
+            pass
+
+    threading.Thread(target=_pump_progress, daemon=True, name="exp-progress").start()
+
+    err = ""
+    try:
+        while proc.poll() is None:
+            if should_cancel and should_cancel():
+                proc.kill()
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise _Cancelled()
+            time.sleep(0.15)
+        if proc.stderr:
+            err = (proc.stderr.read() or b"").decode("utf-8", "replace")
+    finally:
+        try:
+            if proc.stderr:
+                proc.stderr.close()
+        except Exception:
+            pass
+    if proc.returncode != 0:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError(f"ffmpeg 转码失败(exit {proc.returncode}): {err.strip()[:180]}")
+    try:
+        tmp.replace(dst)
+    except OSError:
+        shutil.move(str(tmp), str(dst))
+    if on_progress:
+        on_progress(1.0)
+    return dst.stat().st_size
+
+
 def _copy_file(src: Path, dst: Path, should_cancel=None) -> int:
     """分块拷贝并保留时间戳；每块检查一次取消，保证"停止"能立刻生效。"""
     written = 0
@@ -392,7 +534,7 @@ def progress(job_id: str) -> Optional[dict]:
     snapshot.pop("cancel", None)
     snapshot["elapsed"] = round((snapshot["finished"] or time.time()) - snapshot["started"], 1)
 
-    # 已写字节 = 已完成 + 正在拷贝的那几个文件的实时进度
+    # 已写字节 = 已完成 + 正在处理的那几个文件的实时进度
     done_bytes = snapshot["bytes_done"]
     live_bytes = 0
     for item in in_flight:
@@ -400,18 +542,33 @@ def progress(job_id: str) -> Optional[dict]:
             part = os.path.getsize(item["dst"]) if os.path.exists(item["dst"]) else 0
         except OSError:
             part = 0
-        live_bytes += min(part, item["size"])
+        # 转码输出的体积和源文件无关，不能按源大小截断
+        live_bytes += part if item.get("transcode") else min(part, item["size"])
     written = done_bytes + live_bytes
     elapsed = max(0.001, (snapshot["finished"] or time.time()) - snapshot["started"])
     speed = written / elapsed
     remaining = max(0, snapshot["bytes_total"] - written)
-    snap_eta = None
-    if snapshot["status"] == "running" and speed > 1024:
-        eta = remaining / speed
-        snap_eta = int(eta) if eta < 24 * 3600 else None
+
+    mode = snapshot.get("mode") or "copy"
+    total_files = snapshot["total"] or 0
+    if mode == "transcode" and total_files:
+        # 进度按文件算，当前文件再用 ffmpeg 的 out_time 比例补齐
+        partial = sum(min(0.995, max(0.0, (i.get("frac") or 0)))
+                      for i in in_flight if i.get("transcode"))
+        pct = min(100.0, (snapshot["done"] + partial) / total_files * 100)
+        done_files = snapshot["done"]
+        rate = done_files / elapsed if done_files else 0
+        eta = (total_files - done_files - partial) / rate if rate > 0.0001 else None
+        snap_eta = int(eta) if eta and eta < 24 * 3600 else None
+    else:
+        pct = written / snapshot["bytes_total"] * 100 if snapshot["bytes_total"] else 0.0
+        snap_eta = None
+        if snapshot["status"] == "running" and speed > 1024:
+            eta = remaining / speed
+            snap_eta = int(eta) if eta < 24 * 3600 else None
 
     snapshot["bytes_written"] = written
-    snapshot["progress"] = round(written / snapshot["bytes_total"] * 100, 1) if snapshot["bytes_total"] else 0.0
+    snapshot["progress"] = round(min(100.0, pct), 1)
     snapshot["speed"] = int(speed)
     snapshot["speed_label"] = f"{format_size(int(speed))}/s" if speed > 1 else "-"
     snapshot["eta"] = snap_eta

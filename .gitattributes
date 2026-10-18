@@ -18,3 +18,6 @@
 *.ico   binary
 *.mp4   binary
 *.lrf   binary
+
+# 3D LUT：纯文本，但一个字节都不能被改写（ffmpeg lut3d 直接解析）
+*.cube  binary

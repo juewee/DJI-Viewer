@@ -3,12 +3,33 @@ import { api, normPath } from './api.js';
 import {
   $, el, fmtSize, fmtDuration, fmtBitrate, toast, copyText, dateLabel,
 } from './utils.js';
-import { store, detailOf, vmOf } from './store.js';
+import { store, detailOf, vmOf, isDLog } from './store.js';
 
 let current = null;
 
+/** 「色彩还原」开关：只有 D-Log 视频才可勾（照片/实况本来颜色就正常，不套 LUT） */
+function syncLutToggle(clip) {
+  const box = $('#chk-lut');
+  const lbl = $('#lbl-lut');
+  if (!box || !lbl) return;
+  const usable = !!store.lutAvailable && !clip.is_photo && !clip.is_scrub
+    && !clip.is_live && isDLog(clip);
+  box.disabled = !usable;
+  box.checked = usable && !!store.lutEnabled;
+  lbl.classList.toggle('disabled', !usable);
+  if (!store.lutAvailable) {
+    lbl.title = '项目目录里没找到 .cube LUT';
+  } else if (usable) {
+    lbl.title = '把这条 D-Log M 视频按 LUT 还原成 Rec.709（实时转码预览，不改原文件）';
+  } else {
+    lbl.title = clip.is_photo || clip.is_scrub || clip.is_live
+      ? '照片/实况本身颜色正常，不需要色彩还原'
+      : '这条素材不是 D-Log，不需要色彩还原';
+  }
+}
+
 // ------------------------------------------------------------ 转码流播放
-function attachLiveStream(video, path, onFail) {
+function attachLiveStream(video, path, onFail, lut = false) {
   if (!('MediaSource' in window)) {
     onFail('当前浏览器不支持 Media Source 流式播放，请改用 LRF 预览或外部播放器。');
     return null;
@@ -35,7 +56,7 @@ function attachLiveStream(video, path, onFail) {
       if (!fetching) {
         fetching = true;
         try {
-          const res = await fetch(api.live(path), { signal: controller.signal });
+          const res = await fetch(api.live(path, lut), { signal: controller.signal });
           fetching = false;
           if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
           const reader = res.body.getReader();
@@ -291,7 +312,10 @@ function setSource(mode, opts = {}) {
     nextToken(video);
     if (video.dataset) video.dataset.alive = '';
     currentFail = fail;
-    window.__liveStop = attachLiveStream(video, clip.video_path || clip.path, fail);
+    // 开了色彩还原就用带 LUT 的转码流（服务端 lut3d，画面已经是 Rec.709）
+    const wantLut = store.lutEnabled && isDLog(clip);
+    if (wantLut) setSegHint('实时转码 + 色彩还原（D-Log M → Rec.709）');
+    window.__liveStop = attachLiveStream(video, clip.video_path || clip.path, fail, wantLut);
     video.play().catch(() => { /* 需要用户手势，忽略 */ });
     watchPlayback(video, fail);
     return;
@@ -382,9 +406,11 @@ export function renderDrawer(clip) {
   segMp4.disabled = !clip.has_video || clip.is_photo;
   segLrf.disabled = !clip.has_proxy;
   segMp4.textContent = clip.is_photo ? '照片' : '原始 MP4';
+  syncLutToggle(clip);
 
   let mode = store.srcMode;
   if (clip.is_photo) mode = 'mp4';
+  else if (store.lutEnabled && isDLog(clip) && !clip.is_live) mode = 'live';   // 勾了色彩还原就必须走转码流
   else if (store.autoLrf && clip.has_proxy) mode = 'lrf';
   else if (!clip.has_video) mode = 'lrf';
   else if (mode === 'lrf' && !clip.has_proxy) mode = 'mp4';

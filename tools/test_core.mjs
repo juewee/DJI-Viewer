@@ -156,11 +156,20 @@ console.log('\n== 属性筛选 ==');
 console.log('\n== 类型筛选 ==');
 {
   const photos = count(F({ types: new Set(['photo']) }));
-  ok('照片数量', photos === clips.filter((c) => c.is_photo).length, `${photos} 张`);
+  ok('照片数量', photos === clips.filter((c) => c.is_photo && !c.is_live).length, `${photos} 张`);
   const proxyOnly = count(F({ types: new Set(['proxy']) }));
   ok('仅 LRF 条目', proxyOnly === clips.filter((c) => c.has_proxy && !c.has_video).length, `${proxyOnly} 条`);
   const videos = count(F({ types: new Set(['video']) }));
-  ok('视频数量', videos === clips.filter((c) => !c.is_photo).length, `${videos} 条`);
+  ok('视频数量', videos === clips.filter((c) => !c.is_photo && !c.is_live).length, `${videos} 条`);
+  // 实况照片自成一类：既不算视频也不算照片
+  const lives = count(F({ types: new Set(['live']) }));
+  ok('实况数量', lives === clips.filter((c) => c.is_live).length, `${lives} 条`);
+  const videoIds = new Set(selectClips(clips, F({ types: new Set(['video']) }), 'time-desc', detailOf)
+    .map((c) => c.id));
+  ok('实况不会混进视频筛选',
+    clips.filter((c) => c.is_live).every((c) => !videoIds.has(c.id)), `视频 ${videoIds.size} 条`);
+  const total = count(F({ types: new Set(['video', 'photo', 'live']) }));
+  ok('三类之和等于全部', total === clips.length, `${total} / ${clips.length}`);
 }
 
 console.log('\n== 时长达标 / 体积达标 ==');

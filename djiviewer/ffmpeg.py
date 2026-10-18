@@ -20,14 +20,66 @@ VIDEO_ARGS = [
 ]
 
 
-def _run(cmd: list, timeout: int) -> subprocess.CompletedProcess:
+def _run(cmd: list, timeout: int, cwd: "str | None" = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
+        cwd=cwd,
         **config.no_window_kwargs(),
     )
+
+
+# ---------------------------------------------------- 套 LUT 重新编码（导出用）
+_encoder_cache: "str | None" = None
+
+
+def best_hevc_encoder() -> str:
+    """优先用硬件 HEVC 编码（4K 全分辨率重编码快得多），没有就退回 libx265。"""
+    global _encoder_cache
+    if _encoder_cache:
+        return _encoder_cache
+    tools = config.find_tools()
+    ff = tools.get("ffmpeg")
+    listing = ""
+    if ff:
+        try:
+            proc = _run([ff, "-hide_banner", "-encoders"], 20)
+            listing = _decode(proc.stdout or b"")
+        except Exception:
+            listing = ""
+    for cand in ("hevc_nvenc", "hevc_qsv", "hevc_amf"):
+        if cand in listing:
+            _encoder_cache = cand
+            return cand
+    _encoder_cache = "libx265"
+    return _encoder_cache
+
+
+def lut_encode_args() -> list:
+    """把 LUT 烘进画面时的编码参数（保持原分辨率、10bit、原声轨）。"""
+    enc = best_hevc_encoder()
+    if enc == "hevc_nvenc":
+        return ["-c:v", "hevc_nvenc", "-preset", "p5", "-rc", "vbr",
+                "-cq", "20", "-b:v", "80M", "-pix_fmt", "p010le"]
+    if enc == "hevc_qsv":
+        return ["-c:v", "hevc_qsv", "-global_quality", "20", "-pix_fmt", "p010le"]
+    if enc == "hevc_amf":
+        return ["-c:v", "hevc_amf", "-quality", "balanced", "-pix_fmt", "p010le"]
+    return ["-c:v", "libx265", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p10le"]
+
+
+def _lut_vf(prefix: str = "", suffix: str = "") -> "str | None":
+    """拼出带 LUT 的 -vf 表达式（相对路径，不用转义 Windows 盘符冒号）。
+
+    **顺序很重要**：一定要先 scale 再 lut3d。在 4K 原尺寸上套 LUT 会白算 9 倍像素，
+    实测实时转码首包从 22 秒降到 1 秒出头。
+    """
+    rel = config.lut_rel()
+    if not rel:
+        return None
+    return f"{prefix}lut3d={rel}{suffix}"
 
 
 def _decode(data: bytes) -> str:
@@ -210,27 +262,39 @@ def analyze_photo(path: str) -> dict:
 
 
 # ------------------------------------------------------------------ 缩略图
-def quick_thumb(src: str, dest: str, ts: float = 1.0,
-                width: int = config.THUMB_WIDTH) -> bool:
+def quick_thumb(src: str, dest: str, ts: "float | None" = 1.0,
+                width: int = config.THUMB_WIDTH, lut: bool = False) -> bool:
     """只为"尽快出图"服务的快速抓帧。
 
     实测：单帧抓取用**软件解码更快**——硬解初始化开销比解一帧本身还大
     （4K HEVC 779ms vs 948ms，720p LRF 263ms vs 648ms）。
     所以这里只用软件解码，也不做多轮重试：抓不出来就放弃，绝不拖累整个出图阶段。
+
+    lut=True 时先做色彩还原（D-Log M → Rec.709）再缩放。
+    ts=None 表示静态图（JPEG/SCR/THM）：**不能带 -ss**，否则 ffmpeg 会直接报错。
     """
     tools = config.find_tools()
     if not tools["ffmpeg"]:
         return False
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    scale = f"scale={width}:-2"
+    vf = scale
+    if lut:
+        vf = _lut_vf(f"{scale},", "") or scale
     cmd = [
         tools["ffmpeg"], "-hide_banner", "-nostdin", "-y", "-v", "error",
-        "-threads", "1", "-ss", f"{max(0.0, ts):.2f}", "-i", src,
+        "-threads", "1",
+    ]
+    if ts is not None:
+        cmd += ["-ss", f"{max(0.0, ts):.2f}"]
+    cmd += [
+        "-i", src,
         "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-dn",
-        "-vf", f"scale={width}:-2", "-q:v", str(config.THUMB_QUALITY),
+        "-vf", vf, "-q:v", str(config.THUMB_QUALITY),
         dest,
     ]
     try:
-        proc = _run(cmd, 25)
+        proc = _run(cmd, 30, cwd=str(config.ROOT) if lut else None)
     except Exception:
         return False
     return proc.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0
@@ -327,24 +391,32 @@ def grab_frames(src: str, ts: float, width: int = config.THUMB_WIDTH) -> Optiona
     return proc.stdout
 
 
-def transcode_stream(src: str) -> Iterator[bytes]:
-    """把源文件实时转成浏览器友好的 fMP4(H.264 720p)，用于浏览器无法解码的 HEVC 8K 素材。"""
+def transcode_stream(src: str, lut: bool = False) -> Iterator[bytes]:
+    """把源文件实时转成浏览器友好的 fMP4(H.264 720p)，用于浏览器无法解码的 HEVC 8K 素材。
+
+    lut=True 时在缩放前插入 lut3d，输出就是色彩还原后的画面（服务端做，精度就是 LUT 本身）。
+    """
     tools = config.find_tools()
     if not tools["ffmpeg"]:
         return
+    scale = "scale='min(1920,iw)':-2"
+    vf = scale
+    if lut:
+        vf = _lut_vf(f"{scale},", "") or scale
     cmd = [
         tools["ffmpeg"], "-hide_banner", "-nostdin", "-v", "error",
         "-i", src,
         "-map", "0:v:0", "-map", "0:a:0?",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
         "-profile:v", "high", "-pix_fmt", "yuv420p",
-        "-vf", "scale='min(1920,iw)':-2",
+        "-vf", vf,
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4", "pipe:1",
     ]
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        cwd=str(config.ROOT) if lut else None,
         **config.no_window_kwargs(),
     )
     try:

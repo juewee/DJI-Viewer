@@ -21,6 +21,11 @@ export function viewModel(clip, detail) {
 /** 导出/转存只取"原片"：MP4/MOV/JPG/DNG；LRF 是预览代理，不导出 */
 export const SOURCE_EXT = /\.(mp4|mov|jpg|jpeg|dng|png)$/i;
 
+/** 这条素材是不是 D-Log（需要色彩还原）——看文件名解析出的 color 字段 */
+export function isDLog(clip) {
+  return /d[\s-]?log/i.test(String((clip && clip.color) || ''));
+}
+
 export function sourceFiles(clip) {
   const out = [];
   for (const p of [clip.video_path, clip.photo_path]) {
@@ -105,11 +110,14 @@ export function matches(clip, f, detail) {
   if (f.codec.size && !f.codec.has(v.codec || '未知')) return false;
 
   if (f.types.size) {
-    const isPhoto = clip.is_photo;
+    const isLive = !!clip.is_live;
+    const isPhoto = clip.is_photo && !isLive;
     const isProxyOnly = clip.has_proxy && !clip.has_video;
-    const isVideo = !isPhoto;
+    // 实况照片单独一类：既不算视频也不算照片
+    const isVideo = !clip.is_photo && !isLive;
     const ok = (f.types.has('photo') && isPhoto)
       || (f.types.has('video') && isVideo)
+      || (f.types.has('live') && isLive)
       || (f.types.has('proxy') && isProxyOnly);
     if (!ok) return false;
   }

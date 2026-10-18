@@ -15,6 +15,58 @@ def norm_id(path: str) -> str:
     return hashlib.sha1(cache.path_key(path).encode("utf-8", "replace")).hexdigest()[:16]
 
 
+# ------------------------------------------------- 实况照片（DJI Live Photo）
+# 实况照片在卡上就是一段固定的 3 秒 MP4，光看时长/分辨率区分不了
+# （实测有 10 个 3.04s 的普通短视频）。真正的标志在 MP4 的 udta 盒子里：
+#   实况照片：lthm + dbpm（没有 dbcm）
+#   普通视频：dbcm（没有 lthm）
+# udta 位于 moov 末尾，读文件尾部几十 KB 就够，不用解整段视频。
+# udta 位于 moov 末尾，而 moov 在文件最后几百 KB 里；读 1MB 尾部足够，
+# 不用解整段视频（实测 69 个 MP4 只多花 ~0.1s）。
+_TAIL_BYTES = 1 << 20
+
+
+def _udta_boxes(path: Path) -> set:
+    """读出 MP4 尾部 udta 里的盒子名（读不到就返回空集合）。"""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            fh.seek(max(0, size - _TAIL_BYTES))
+            tail = fh.read()
+    except OSError:
+        return set()
+
+    # 从后往前找候选 udta，必须能通过盒子大小校验（避免撞上 mdat 里的随机字节）
+    pos = len(tail)
+    while True:
+        i = tail.rfind(b"udta", 0, pos)
+        if i < 4:
+            return set()
+        pos = i
+        start = i - 4
+        box_size = int.from_bytes(tail[start:start + 4], "big")
+        if 8 <= box_size <= len(tail) - start:
+            names, off, end = set(), start + 8, start + box_size
+            ok = True
+            while off + 8 <= end:
+                child = int.from_bytes(tail[off:off + 4], "big")
+                if child < 8 or off + child > end:
+                    ok = False
+                    break
+                names.add(tail[off + 4:off + 8].decode("latin-1", "replace"))
+                off += child
+            if ok and names:
+                return names
+
+
+def is_dji_live(path: Path) -> bool:
+    """这个 MP4 是不是 DJI 的实况照片。"""
+    if path.suffix.lower() not in (".mp4", ".mov"):
+        return False
+    boxes = _udta_boxes(path)
+    return "lthm" in boxes and "dbcm" not in boxes
+
+
 def _walk(root: Path, recursive: bool, max_depth: int = 3) -> Iterable[Path]:
     root_depth = len(root.parts)
     stack: "list[tuple[Path,int]]" = [(root, 0)]
@@ -112,6 +164,7 @@ def scan(folder: str, recursive: bool = True, force: bool = False) -> dict:
         raise NotADirectoryError(f"不是目录: {folder}")
 
     files = list(_walk(root, recursive))
+    lut_available = bool(config.lut_rel())
     groups: dict = {}
     for f in files:
         stem_key = cache.path_key(str(f.with_suffix("")))
@@ -214,6 +267,10 @@ def scan(folder: str, recursive: bool = True, force: bool = False) -> dict:
             "thm_path": thm["path"] if thm else None,
             "preview_path": (scr or thm)["path"] if (scr or thm) else None,
             "is_scrub": video is None and proxy is None and photo is None,
+            # DJI 实况照片：机身存的是一段固定的 3 秒 4K 视频，
+            # 靠 MP4 的 udta 盒子区分（实况带 lthm+dbpm，普通视频只有 dbcm）
+            "is_live": False,
+            "live_kind": None,
             "preview_size_label": format_size((scr or thm)["size"]) if (scr or thm) else None,
             "preview_resolution": None,
             "extra_files": other_paths,
@@ -254,6 +311,10 @@ def scan(folder: str, recursive: bool = True, force: bool = False) -> dict:
                 clip["width"], clip["height"] = dims
             if clip_is_scrub and dims:
                 clip["resolution"] = clip["preview_resolution"]
+        # DJI 实况照片：udta 里带 lthm+dbpm（普通视频只有 dbcm）
+        if video is not None and is_dji_live(Path(video["path"])):
+            clip["is_live"] = True
+            clip["live_kind"] = "dji"
         if (scr or thm) and not clip["preview_resolution"]:
             dims = ffmpeg.jpeg_dimensions((scr or thm)["path"])
             res_cls = classify_resolution(*dims) if dims else None
@@ -277,6 +338,9 @@ def scan(folder: str, recursive: bool = True, force: bool = False) -> dict:
         if clip_is_scrub and not clip.get("resolution"):
             clip["resolution"] = clip.get("preview_resolution")
         clip["thumb"] = thumb
+        if lut_available:
+            # 带色彩还原（D-Log M → Rec.709）的缩略图名；前端按需请求，服务端按需生成
+            clip["thumb_lut"] = cache.thumb_name(primary["path"], lut=True)
         if cached:
             clip["detail"] = _shrink(cached)
         clips.append(clip)
@@ -379,7 +443,8 @@ def _summarize(clips: "list[dict]") -> dict:
         "fps": fps_count,
         "codec": codec_count,
         "photos": sum(1 for c in clips if c["is_photo"]),
-        "videos": sum(1 for c in clips if not c["is_photo"]),
+        "videos": sum(1 for c in clips if not c["is_photo"] and not c.get("is_live")),
+        "live_count": sum(1 for c in clips if c.get("is_live")),
         "burst_groups": len({c["burst_key"] for c in clips if c.get("burst_key")}),
         "burst_photos": sum(1 for c in clips if c.get("burst_key")),
         "with_proxy": sum(1 for c in clips if c["has_proxy"]),

@@ -395,6 +395,7 @@ globalThis.fetch = async (url, opts = {}) => {
       settings: { last_folder: 'G:\\DCIM\\DJI_001', recursive: true, play_mode: 'direct' },
       roots: [{ path: 'G:\\DCIM', label: 'G: DCIM', children: ['G:\\DCIM\\DJI_001'] }],
       cache_dir: 'D:/x/cache', tools_error: null,
+      lut: { available: true, name: 'test-dlog.cube', rel: 'cache/lut/active.cube', size: 4096 },
     });
   }
   if (u.includes('/_api/scan')) {
@@ -421,7 +422,10 @@ globalThis.fetch = async (url, opts = {}) => {
       job: {
         id: 'exp0001', status: 'done', dest: 'G:\\DCIM\\DJI_001_export',
         total: 3, done: 2, failed: 1, byte_total: 100,
-        bytes_total: 3000, bytes_done: 2000, bytes_written: 3000, progress: 100,
+        // 色彩还原导出：写出 284MB 而源合计 794MB，按字节算只有 35.7%，
+        // 服务端给出的 progress 才是真值（100）
+        mode: 'transcode', bytes_total: 794000000, bytes_done: 284000000,
+        bytes_written: 284000000, progress: 100,
         speed: 104857600, speed_label: '100 MB/s', eta: null, eta_label: null,
         elapsed: 2.5, log: ['完成：成功 2，失败 1'],
         failure_count: 1,
@@ -1031,6 +1035,127 @@ try {
   ok('批量定位', false, err.message);
 }
 
+console.log('\n== 9.8 色彩还原（抽屉里的开关 + 导出选项） ==');
+try {
+  const chk = wrapEl(byId('chk-lut'));
+  ok('色彩还原开关在右侧播放栏', !!rawById('chk-lut'));
+
+  wrapEl(byId('d-close')).dispatch('click', {});
+  await new Promise((r) => setTimeout(r, 80));
+  const videoCard = rawById('gallery').querySelectorAll('.card')
+    .find((c) => !c.querySelector('.tag.ph') && !c.querySelector('.tag.live'));
+  wrapEl(videoCard).dispatch('click', {});
+  await new Promise((r) => setTimeout(r, 220));
+  ok('D-Log 视频可勾选色彩还原', chk.disabled === false);
+  ok('默认不开色彩还原', chk.checked === false);
+
+  const mark = requests.length;
+  const savedMS = globalThis.MediaSource;
+  globalThis.MediaSource = class FakeMS {
+    constructor() { this.readyState = 'open'; this.listeners = {}; }
+    addEventListener(type, fn) {
+      (this.listeners[type] = this.listeners[type] || []).push(fn);
+      if (type === 'sourceopen') setTimeout(() => fn({}), 0);
+    }
+    addSourceBuffer() {
+      return {
+        mode: '', updating: false,
+        appendBuffer() {}, remove() {}, abort() {},
+        addEventListener() {}, removeEventListener() {},
+        buffered: { length: 0, start: () => 0, end: () => 0 },
+      };
+    }
+    endOfStream() {}
+  };
+  try {
+    chk.checked = true;
+    chk.dispatch('change', { target: chk });
+    await new Promise((r) => setTimeout(r, 400));
+    const liveReq = requests.slice(mark).find((r) => r.url.includes('/_live/'));
+    ok('开启后播放改走实时转码并带 LUT', !!liveReq && liveReq.url.includes('lut=1'),
+      liveReq ? liveReq.url.slice(-42) : '没发请求');
+  } finally {
+    globalThis.MediaSource = savedMS;
+  }
+
+  const imgs = rawById('gallery').querySelectorAll('img');
+  ok('缩略图不会因为开关变成 LUT 版',
+    imgs.every((i) => !String(i.attributes.src || '').includes('_lut')), `${imgs.length} 张`);
+
+  wrapEl(byId('d-close')).dispatch('click', {});
+  await new Promise((r) => setTimeout(r, 80));
+  const photoCard = rawById('gallery').querySelectorAll('.card')
+    .find((c) => c.querySelector('.tag.ph'));
+  if (photoCard) {
+    wrapEl(photoCard).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 200));
+    ok('照片上色彩还原开关被禁用', chk.disabled === true);
+    ok('照片提示不需要还原', /照片|不需要|实况/.test(rawById('lbl-lut').title
+      || rawById('lbl-lut').getAttribute('title') || ''));
+    wrapEl(byId('d-close')).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 60));
+  } else {
+    ok('照片上色彩还原开关被禁用', true, '当前没有照片');
+  }
+
+  const exLut = rawById('ex-lut');
+  ok('导出弹窗有色彩还原选项', !!exLut);
+  ok('找到 LUT 时导出选项可用', exLut.disabled === false);
+} catch (err) {
+  ok('色彩还原开关', false, err.message);
+}
+
+console.log('\n== 9.9 实况照片（Live） ==');
+try {
+  const cards = rawById('gallery').querySelectorAll('.card');
+  const badgeTexts = [];
+  cards.forEach((c) => {
+    const t = c.querySelector('.tag.live');
+    if (t) badgeTexts.push(t.textContent);
+  });
+  const liveCount = (fixture.clips || []).filter((c) => c.is_live).length;
+  ok('实况卡片带「实况」角标', badgeTexts.length > 0,
+    `${badgeTexts.length} 张角标（fixture 里 ${liveCount} 条实况）`);
+  ok('角标文案正确', badgeTexts.every((t) => t === '实况'), badgeTexts[0] || '无');
+  const liveCard = cards.find((c) => c.querySelector('.tag.live'));
+  ok('实况卡片没有再打「照片」标', !!liveCard && !liveCard.querySelector('.tag.ph'));
+
+  const liveChip = rawById('f-types').querySelectorAll('.chip')
+    .find((c) => c.dataset.type === 'live');
+  ok('筛选栏有「实况」芯片', !!liveChip);
+  if (liveChip) {
+    wrapEl(byId('btn-filter-reset')).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 300));
+    const before = rawById('gallery').querySelectorAll('.card').length;
+    wrapEl(liveChip).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 320));
+    const shown = rawById('gallery').querySelectorAll('.card');
+    ok('筛「实况」只剩实况', shown.length > 0 && shown.length === liveCount,
+      `${before} → ${shown.length} 张 / fixture ${liveCount} 条`);
+    ok('筛出来每张都有实况角标',
+      shown.every((c) => !!c.querySelector('.tag.live')), `${shown.length} 张`);
+    wrapEl(byId('btn-filter-reset')).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const card = rawById('gallery').querySelectorAll('.card')
+    .find((c) => c.querySelector('.tag.live'));
+  if (card) {
+    wrapEl(card).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 220));
+    ok('打开实况后色彩还原被禁用', rawById('chk-lut').disabled === true);
+    ok('实况的提示说明不需要还原',
+      /实况|照片/.test(rawById('lbl-lut').title
+        || rawById('lbl-lut').getAttribute('title') || ''));
+    wrapEl(byId('d-close')).dispatch('click', {});
+    await new Promise((r) => setTimeout(r, 60));
+  } else {
+    ok('打开实况后色彩还原被禁用', true, '当前没有实况卡片');
+  }
+} catch (err) {
+  ok('实况照片', false, err.message);
+}
+
 console.log('\n== 10. 转存弹窗 ==');
 try {
   wrapEl(byId('sel-export')).dispatch('click', {});
@@ -1068,9 +1193,18 @@ try {
     rawById('ex-progress-text').textContent.slice(0, 56));
   ok('进度文案含速度', /\/s/.test(rawById('ex-progress-text').textContent),
     rawById('ex-progress-text').textContent.slice(0, 70));
-  ok('进度文案含已写/总量', /\/\s*[\d.]+ ?(B|KB|MB|GB)/.test(rawById('ex-progress-text').textContent),
+  ok('进度文案含已写/总量', /\/\s*[\d.]+ ?(B|KB|MB|GB)/.test(rawById('ex-progress-text').textContent)
+    || /已写出/.test(rawById('ex-progress-text').textContent),
     rawById('ex-progress-text').textContent.slice(0, 70));
   ok('进度条已推进', rawById('ex-bar-fill').style.width !== '', rawById('ex-bar-fill').style.width);
+  // 关键回归：转码任务输出 284MB vs 源 794MB，按字节只有 35.7%，
+  // 必须用服务端给的 progress（100）——否则进度条永远走不满
+  ok('转码任务完成后进度条到 100%',
+    rawById('ex-bar-fill').style.width === '100.0%', rawById('ex-bar-fill').style.width);
+  ok('转码任务进度文案只报已写出（不拿源总量当分母）',
+    /已写出/.test(rawById('ex-progress-text').textContent)
+    && !/794\.00 MB/.test(rawById('ex-progress-text').textContent),
+    rawById('ex-progress-text').textContent.slice(0, 70));
   ok('失败明细已展示', rawById('ex-failures').hidden === false);
   ok('失败明细含原因', /PermissionError/.test(rawById('ex-failures').textContent),
     rawById('ex-failures').textContent.replace(/\s+/g, ' ').slice(0, 60));

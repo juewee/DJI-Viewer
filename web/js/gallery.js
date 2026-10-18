@@ -98,7 +98,12 @@ function fillThumbOverlay(thumb, clip) {
   const v = vmOf(clip);
 
   const badges = el('div', { class: 'badge-row' });
-  if (clip.is_photo) badges.appendChild(el('span', { class: 'tag ph', text: '照片' }));
+  if (clip.is_live) {
+    badges.appendChild(el('span', {
+      class: 'tag live', text: '实况',
+      title: 'DJI 实况照片：机身存的是一段固定的 3 秒 4K 视频',
+    }));
+  } else if (clip.is_photo) badges.appendChild(el('span', { class: 'tag ph', text: '照片' }));
   if ((clip.burst_count || 1) > 1) {
     // 摊开状态下：点角标可以把整组收起来
     const expandedFrame = !store.mergeBursts || store.expandedBursts.has(clip.burst_key);

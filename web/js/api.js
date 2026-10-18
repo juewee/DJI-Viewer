@@ -59,7 +59,7 @@ export const api = {
   media: (path) => `/_media/${pathSeg(path)}`,
   /** 附件形式（Content-Disposition: attachment），供拖到资源管理器时浏览器落盘 */
   download: (path) => `/_media/${pathSeg(path)}?dl=1`,
-  live: (path) => `/_live/${pathSeg(path)}`,
+  live: (path, lut = false) => `/_live/${pathSeg(path)}${lut ? '?lut=1' : ''}`,
   photo: (path) => `/_photo/${pathSeg(path)}`,
 
   reveal: (path) => fetch(`/_api/reveal${qs({ path })}`).then(json),

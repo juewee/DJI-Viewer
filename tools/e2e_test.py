@@ -111,6 +111,35 @@ def main(folder: str) -> int:
     dcim_roots = [r["path"] for r in info2.get("roots", []) if "DCIM" in r["path"].upper()]
     check("扫描后列出当前 DCIM 根目录", bool(dcim_roots), str(dcim_roots[:3]))
 
+    print("\n== 2.55 实况照片识别（DJI Live Photo） ==")
+    lives = [c for c in clips if c.get("is_live")]
+    by_name = {c["name"]: c for c in clips}
+    check("识别出实况照片", len(lives) > 0, f"{len(lives)} 条 / {len(clips)} 条")
+    if lives:
+        check("实况被标成 live_kind=dji",
+              all(c.get("live_kind") == "dji" for c in lives),
+              str(lives[0].get("live_kind")))
+        check("实况都是视频文件（机身存的就是 3 秒 MP4）",
+              all(c.get("video_path") for c in lives), f"{len(lives)} 条")
+        check("实况没有出现在照片里",
+              all(not c["is_photo"] for c in lives), "都在视频目录")
+        want = by_name.get("DJI_20261017152447_0079_D.MP4")
+        if want:
+            check("0079 被认成实况（用户给的样本）", want.get("is_live") is True,
+                  f"is_live={want.get('is_live')}")
+        other = by_name.get("DJI_20261017120714_0029_D.MP4")
+        if other:
+            check("0029 没被误判成实况（用户给的样本）", other.get("is_live") in (False, None),
+                  f"is_live={other.get('is_live')}")
+        check("汇总里实况数量正确",
+              scan["summary"].get("live_count") == len(lives),
+              f"{scan['summary'].get('live_count')} vs {len(lives)}")
+        check("视频 + 照片 + 实况 = 总数",
+              scan["summary"].get("videos", 0) + scan["summary"].get("photos", 0)
+              + scan["summary"].get("live_count", 0) == len(clips),
+              f"{scan['summary'].get('videos')} + {scan['summary'].get('photos')} "
+              f"+ {scan['summary'].get('live_count')}")
+
     print("\n== 2.6 按需分析（analyze=0） ==")
     # 用一个干净的小目录验证：服务端"明明可以分析"，但因为 analyze=0 而没有排任何任务
     ondemand = config.ROOT / "cache" / "_ondemand_test"
@@ -301,6 +330,42 @@ def main(folder: str) -> int:
             check("空列表返回 404", exc.code == 404, f"HTTP {exc.code}")
     else:
         check("多选定位返回计划", True, "视频不足两个，跳过")
+
+    print("\n== 5.7 色彩还原 LUT（D-Log M → Rec.709） ==")
+    info_lut = get_json("/_api/info").get("lut") or {}
+    if info_lut.get("available"):
+        check("识别到项目里的 LUT", bool(info_lut.get("name")), str(info_lut.get("name"))[:52])
+        check("LUT 已复制成 ffmpeg 可用的相对路径",
+              (info_lut.get("rel") or "").startswith("cache/lut/"), str(info_lut.get("rel")))
+        lut_clip = next((c for c in clips if c.get("thumb_lut")), None)
+        check("扫描结果里带 LUT 缩略图名", bool(lut_clip),
+              (lut_clip or {}).get("thumb_lut", "无"))
+        if lut_clip:
+            t0 = time.time()
+            with urllib.request.urlopen(
+                    f"{BASE}/_thumb/{urllib.parse.quote(lut_clip['thumb_lut'])}"
+                    f"?path={urllib.parse.quote(lut_clip['path'])}", timeout=180) as res:
+                lut_bytes = res.read()
+            dt = (time.time() - t0) * 1000
+            check("LUT 缩略图按需生成并返回 JPEG",
+                  lut_bytes[:2] == b"\xff\xd8" and len(lut_bytes) > 2000,
+                  f"{len(lut_bytes)} 字节 / {dt:.0f} ms")
+            # 和普通缩略图比：内容必须不同（说明 LUT 真的生效了，不是原样返回）
+            with urllib.request.urlopen(
+                    f"{BASE}/_thumb/{urllib.parse.quote(lut_clip['thumb'])}"
+                    f"?path={urllib.parse.quote(lut_clip['path'])}", timeout=60) as res:
+                plain_bytes = res.read()
+            check("LUT 版与普通版画面不同（确实做了色彩映射）",
+                  lut_bytes != plain_bytes, f"{len(lut_bytes)} vs {len(plain_bytes)} 字节")
+            # 转码流带 LUT 也能出流
+            t0 = time.time()
+            with urllib.request.urlopen(
+                    media_url("/_live/", lut_clip["video_path"]) + "?lut=1", timeout=180) as res:
+                head = res.read(16384)
+            check("带 LUT 的实时转码能出流",
+                  head[4:8] == b"ftyp", f"{len(head)} 字节 / {(time.time()-t0)*1000:.0f} ms")
+    else:
+        check("识别到项目里的 LUT", True, "项目里没有 .cube，跳过")
 
     print("\n== 6. 时间轴抓帧 ==")
     try:

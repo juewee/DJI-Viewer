@@ -44,6 +44,60 @@ LOG_FILE = CACHE_DIR / "server.log"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8777
 
+# ---- 色彩 LUT（D-Log M → Rec.709）--------------------------------------
+# 把项目里的 .cube 复制到 cache/lut/active.cube，ffmpeg 就能用**相对路径**引用它，
+# 避开 Windows 盘符冒号在 filtergraph 里的转义地狱。
+LUT_DIR = CACHE_DIR / "lut"
+LUT_NAME = "active.cube"
+_LUT_MARKER = LUT_DIR / "source.txt"
+
+
+def find_lut_source() -> "Optional[Path]":
+    """在项目根目录、luts/、assets/luts/ 里找第一个 .cube。"""
+    for base in (ROOT, ROOT / "luts", ROOT / "assets" / "luts", ROOT / "assets"):
+        try:
+            if not base.is_dir():
+                continue
+        except OSError:
+            continue
+        for f in sorted(base.glob("*.cube")):
+            try:
+                if f.is_file() and f.stat().st_size > 256:
+                    return f
+            except OSError:
+                continue
+    return None
+
+
+def lut_rel() -> "Optional[str]":
+    """返回给 ffmpeg 用的相对路径（相对 ROOT），没有 LUT 时返回 None。"""
+    src = find_lut_source()
+    if not src:
+        return None
+    dest = LUT_DIR / LUT_NAME
+    try:
+        sig = f"{src.name}|{src.stat().st_size}|{int(src.stat().st_mtime)}"
+        old = _LUT_MARKER.read_text(encoding="utf-8").strip() if _LUT_MARKER.exists() else ""
+        if old != sig or not dest.exists() or dest.stat().st_size != src.stat().st_size:
+            LUT_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+            _LUT_MARKER.write_text(sig, encoding="utf-8")
+    except OSError as exc:
+        log(f"[lut] 复制 LUT 失败: {exc}")
+        return None
+    return f"cache/lut/{LUT_NAME}"
+
+
+def lut_info() -> dict:
+    src = find_lut_source()
+    rel = lut_rel()
+    return {
+        "available": bool(rel),
+        "name": src.name if src else None,
+        "rel": rel,
+        "size": src.stat().st_size if src else 0,
+    }
+
 # ---- 文件类型 ----------------------------------------------------------
 VIDEO_EXT = {".mp4", ".mov"}
 PROXY_EXT = {".lrf"}

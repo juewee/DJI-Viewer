@@ -153,9 +153,10 @@
       </div>
       <div class="fgroup">
         <div class="flabel">类型</div>
-        <div class="chips">
+        <div class="chips" id="f-types">
           <button class="chip tgl" data-type="video">视频</button>
           <button class="chip tgl" data-type="photo">照片</button>
+          <button class="chip tgl" data-type="live" title="DJI 实况照片：机身存的是一段固定的 3 秒视频">实况</button>
           <button class="chip tgl" data-type="proxy">仅 LRF</button>
         </div>
       </div>
@@ -286,6 +287,10 @@
       <label class="checkline sm" title="自动优先使用 LRF（更省带宽、秒开）">
         <input type="checkbox" id="chk-autolrf"><span>优先 LRF</span>
       </label>
+      <label class="checkline sm" id="lbl-lut"
+             title="把这条 D-Log M 视频按项目里的 .cube LUT 还原成 Rec.709（实时转码预览，不写回文件）">
+        <input type="checkbox" id="chk-lut"><span>色彩还原</span>
+      </label>
       <div class="spacer"></div>
       <button class="btn ghost sm" id="d-open">外部播放器</button>
       <button class="btn ghost sm" id="d-reveal">定位文件</button>
@@ -350,6 +355,10 @@
           <label class="checkline sm"><input type="checkbox" id="ex-by-date" checked><span>按日期建子文件夹</span></label>
           <label class="checkline sm"><input type="checkbox" id="ex-keep-dir"><span>保留原目录名（DJI_001）</span></label>
           <label class="checkline sm"><input type="checkbox" id="ex-manifest" checked><span>写导出清单 CSV</span></label>
+          <label class="checkline sm" id="ex-lut-line"
+                 title="把 D-Log M 视频重新编码并烘入 LUT（照片不套 LUT，直接拷贝）">
+            <input type="checkbox" id="ex-lut"><span>色彩还原（D-Log→709）</span>
+          </label>
           <label class="checkline sm"><span>重名时</span>
             <select class="select sm" id="ex-conflict">
               <option value="overwrite">覆盖</option>

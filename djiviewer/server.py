@@ -324,6 +324,7 @@ class Handler(BaseHTTPRequestHandler):
                 "cache": cache.stats(),
                 "settings": {k: v for k, v in _settings.items() if k != "allowed_roots"},
                 "roots": scan.list_roots(_settings.get("last_folder") or "").get("roots", []),
+                "lut": config.lut_info(),
                 "cache_dir": str(config.CACHE_DIR),
             })
 
@@ -533,6 +534,8 @@ class Handler(BaseHTTPRequestHandler):
                 "keepDirName": payload.get("keepDirName", False),
                 "conflict": payload.get("conflict", "overwrite"),
                 "manifest": payload.get("manifest", True),
+                # 色彩还原导出：视频重新编码并烘入 LUT（照片不套）
+                "lut": bool(payload.get("lut")),
             }
             if not raw_paths:
                 return self._error(400, "没有要导出的文件")
@@ -682,6 +685,19 @@ class Handler(BaseHTTPRequestHandler):
         # 缩略图文件名可能是生成的（hash.jpg），也可能是相机自带的 SCR/THM（原名直出）
         if not re.fullmatch(r"[\w.\- ]+\.(?:jpg|jpeg|scr|thm)", name or "", re.IGNORECASE):
             return self._error(400, "非法缩略图名")
+        # 带 LUT 的版本：按需生成（同一路径 + _lut 后缀）
+        if name.lower().endswith("_lut.jpg"):
+            raw = req["query"].get("path") or ""
+            if not raw:
+                return self._error(400, "缺少 path 参数")
+            try:
+                src = resolve_media_path(raw)
+            except PermissionError:
+                return self._error(403, "越权访问")
+            produced = cache.lut_thumb(str(src))
+            if not produced:
+                return self._error(404, "无法生成色彩还原缩略图")
+            return self._send_file(config.THUMB_DIR / produced, "image/jpeg", cache_ok=True)
         target = (config.THUMB_DIR / name).resolve()
         if config.CACHE_DIR.resolve() not in target.parents:
             return self._error(403, "越权访问")
@@ -742,18 +758,32 @@ class Handler(BaseHTTPRequestHandler):
         self._stream_range(p, size, _guess_type(p), method, extra=extra)
 
     def _serve_live(self, req: dict, method: str) -> None:
-        """实时转码流（fMP4），用于浏览器无法直接解码的素材。"""
+        """实时转码流（fMP4），用于浏览器无法直接解码的素材。
+
+        ?lut=1 时先套色彩 LUT（D-Log M → Rec.709）再编码。
+        """
         raw = req["path"][len("/_live/"):]
         p = resolve_media_path(raw)
         if not p.exists():
             return self._error(404, "文件不存在")
+        use_lut = req["query"].get("lut") in ("1", "true", "True") and bool(config.lut_rel())
+        src = p
+        if use_lut and p.suffix.lower() in config.VIDEO_EXT:
+            # LUT 预览优先用成对的 LRF(720p H.264)：4K HEVC 软解本身就跟不上实时，
+            # 套上 LUT 更慢；LRF 解码快，套 LUT 也能流畅播。
+            lrf = p.with_suffix(".LRF")
+            try:
+                if lrf.exists() and lrf.stat().st_size > 0:
+                    src = lrf
+            except OSError:
+                pass
         self.send_response(200)
         self.send_header("Content-Type", "video/mp4")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.end_headers()
         try:
-            for chunk in ffmpeg.transcode_stream(str(p)):
+            for chunk in ffmpeg.transcode_stream(str(src), lut=use_lut):
                 self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass

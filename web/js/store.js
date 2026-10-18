@@ -3,12 +3,12 @@ import {
   FILTER_DEFAULT, cloneFilter, activeFilterCount as countActive,
   matches as coreMatches, selectClips, groupByDay as coreGroupByDay, viewModel,
   sourceFiles, exportFileList,
-  collapseBursts as coreCollapseBursts, itemClips, burstSelectState,
+  collapseBursts as coreCollapseBursts, itemClips, burstSelectState, isDLog,
 } from './core.js';
 
 export {
   FILTER_DEFAULT, cloneFilter, viewModel, sourceFiles, exportFileList,
-  itemClips, burstSelectState,
+  itemClips, burstSelectState, isDLog,
 };
 
 export const store = {
@@ -37,6 +37,8 @@ export const store = {
    *   'all'      = 扫描后全部分析（以前的默认，会短时间占满 CPU）
    */
   analysisMode: 'on-open',
+  /** 色彩还原：用项目里的 .cube LUT（D-Log M → Rec.709）作用于缩略图与播放 */
+  lutEnabled: false,
   /** 当前视口内的 clip.id（viewport 模式用） */
   visibleIds: new Set(),
   collapsedDays: new Set(),

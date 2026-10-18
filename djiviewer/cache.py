@@ -41,16 +41,17 @@ def path_key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
-def thumb_name(path: str) -> str:
+def thumb_name(path: str, lut: bool = False) -> str:
     import hashlib
 
     h = hashlib.sha1(path_key(path).encode("utf-8", "replace")).hexdigest()[:20]
     stem = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(path).stem)[:40]
-    return f"{stem}_{h}.jpg"
+    tag = "_lut" if lut else ""
+    return f"{stem}_{h}{tag}.jpg"
 
 
-def thumb_path(path: str) -> Path:
-    return config.THUMB_DIR / thumb_name(path)
+def thumb_path(path: str, lut: bool = False) -> Path:
+    return config.THUMB_DIR / thumb_name(path, lut)
 
 
 def load() -> None:
@@ -174,13 +175,19 @@ def _thumb_ready(path: str) -> bool:
 thumb_ready = _thumb_ready
 
 
-def _thumb_only(path: str) -> bool:
-    """只负责出图：预览图直出 → 照片缩放 → 视频抓一帧。"""
-    if _thumb_ready(path):
+def _thumb_only(path: str, lut: bool = False) -> bool:
+    """只负责出图：预览图直出 → 照片缩放 → 视频抓一帧。
+
+    lut=True 时改为"抽一帧 + 套 LUT（D-Log M→Rec.709）"，输出到独立的 _lut.jpg，
+    与普通缩略图并存，切换时不用重算。
+    """
+    dest = thumb_path(path, lut)
+    if dest.exists() and dest.stat().st_size > 0:
         return True
-    dest = thumb_path(path)
     p = Path(path)
     ext = p.suffix.lower()
+    if lut:
+        return _lut_thumb_only(p, ext, dest)
     if ext in config.PREVIEW_EXT:
         return bool(_preview_thumb(path))
     if ext in (".jpg", ".jpeg"):
@@ -203,6 +210,31 @@ def _thumb_only(path: str) -> bool:
         _share_thumb_with_pair(p, dest)
         return True
     return False
+
+
+def _lut_thumb_only(p: Path, ext: str, dest: Path) -> bool:
+    """套 LUT 出图：静态图不让 ffmpeg 带 -ss（会失败），视频优先用 LRF（更快）。"""
+    source = p
+    still = ext in config.PHOTO_EXT or ext in config.PREVIEW_EXT
+    if ext in config.VIDEO_EXT:
+        lrf = _sibling(p, ".LRF")
+        try:
+            if lrf and lrf.exists() and lrf.stat().st_size > 0:
+                source, still = lrf, False
+        except OSError:
+            pass
+    return ffmpeg.quick_thumb(str(source), str(dest),
+                              ts=None if still else 1.0, lut=True)
+
+
+def lut_thumb(path: str) -> Optional[str]:
+    """生成/复用"带 LUT 的缩略图"，返回文件名；没有 LUT 时返回 None。"""
+    if not config.lut_rel():
+        return None
+    dest = thumb_path(path, lut=True)
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest.name
+    return dest.name if _thumb_only(path, lut=True) else None
 
 
 def probe_now(path: str) -> dict:

@@ -197,6 +197,12 @@ code { font-family: var(--mono); background: var(--panel-3); padding: 1px 5px; b
   background: var(--accent-dim); border-color: var(--accent-line); color: var(--accent);
   box-shadow: inset 0 0 0 1px rgba(53, 224, 255, .1);
 }
+.chip.disabled, .chip.tgl.disabled {
+  opacity: .45; cursor: not-allowed; border-style: dashed;
+}
+.chip.disabled:hover { color: var(--txt-2); border-color: var(--line-2); }
+.checkline.disabled { opacity: .42; cursor: not-allowed; }
+.checkline.disabled input { cursor: not-allowed; }
 .badge {
   font-family: var(--mono); font-size: 10.5px; background: var(--accent); color: #04121b;
   border-radius: 999px; padding: 0 5px; margin-left: 2px; font-weight: 700;
@@ -421,6 +427,7 @@ input[type=range] { accent-color: var(--accent-2); }
   font-size: 10px; color: var(--txt-3);
 }
 .tag.ph { color: #ffd9a8; }
+.tag.live { color: #ff9ad1; border-color: rgba(255, 154, 209, .42); background: rgba(78, 20, 52, .8); }
 .tag.scrub { color: #b9e6ff; border-color: rgba(185, 230, 255, .38); }
 .dur {
   position: absolute; right: 7px; bottom: 7px; font-family: var(--mono); font-size: 11px;

@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -101,6 +102,19 @@ def wait_job(job: str, timeout: float = 300) -> dict:
     return get_json("/_api/export/progress", job=job)["job"]
 
 
+def ffprobe_size(path: str) -> str:
+    """读视频分辨率，用于校验"全分辨率烘焙"没有偷偷缩放。"""
+    try:
+        tools = config.find_tools()
+        proc = subprocess.run(
+            [tools["ffprobe"], "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+            capture_output=True, timeout=60, **config.no_window_kwargs())
+        return (proc.stdout or b"").decode("utf-8", "replace").strip()
+    except Exception as exc:
+        return f"error:{exc}"
+
+
 def main(folder: str) -> int:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -145,6 +159,57 @@ def main(folder: str) -> int:
     check("空间足够判断", plan["enough_space"] is True)
     check("目标不存在但可用", plan["dest_ok"] is True and plan["dest_exists"] is False)
     check("干跑不写任何文件", not Path(dest1).exists())
+
+    print("\n== 1.5 色彩还原导出计划（LUT） ==")
+    info = get_json("/_api/info")
+    if (info.get("lut") or {}).get("available"):
+        dest_lut = str(WORK / "out_lut")
+        plan_lut = post("/_api/export", {"paths": files, "dest": dest_lut,
+                                         "dryRun": True, "lut": True})
+        check("LUT 导出计划标记 lut", plan_lut.get("lut") is True,
+              str(plan_lut.get("lut_name"))[:40])
+        videos = [it for it in plan_lut["items"] if it["kind"] == "video"]
+        photos = [it for it in plan_lut["items"] if it["kind"] == "photo"]
+        check("视频都被标记为需要转码",
+              videos and all(it["transcode"] for it in videos),
+              f"{len(videos)} 个视频")
+        check("照片不套 LUT（直接拷贝）",
+              all(not it["transcode"] for it in photos), f"{len(photos)} 张照片")
+        check("计划里提示了要重新编码",
+              any("重新编码" in w for w in plan_lut["warnings"]),
+              (plan_lut["warnings"] or [""])[0][:36])
+        check("LUT 干跑也不写文件", not Path(dest_lut).exists())
+
+        # 真跑一个最小的视频，确认"套到原片"这条链路真的通
+        smallest = min(mp4s, key=lambda p: p.stat().st_size)
+        job = post("/_api/export", {"paths": [str(smallest)], "dest": dest_lut,
+                                    "byDate": False, "lut": True})["job"]
+        st = wait_job(job, timeout=420)
+        out_lut = Path(dest_lut) / smallest.name
+        check("LUT 导出真跑成功", st["done"] == 1 and st["failed"] == 0,
+              f"done={st['done']} failed={st['failed']}")
+        check("产出了套过 LUT 的 MP4",
+              out_lut.exists() and out_lut.read_bytes()[4:8] == b"ftyp",
+              f"{out_lut.stat().st_size if out_lut.exists() else 0} 字节")
+        check("输出与源文件不同（确实重新编码了）",
+              out_lut.exists() and out_lut.read_bytes() != smallest.read_bytes(),
+              f"源 {smallest.stat().st_size} → 出 {out_lut.stat().st_size if out_lut.exists() else 0}")
+        check("分辨率保持原样（全分辨率烘焙）",
+              out_lut.exists() and ffprobe_size(str(out_lut)) == ffprobe_size(str(smallest)),
+              f"{ffprobe_size(str(smallest))} → {ffprobe_size(str(out_lut)) if out_lut.exists() else '?'}")
+        # 进度：转码后体积和源文件对不上，百分比必须按文件算，否则永远停在 30~40%
+        check("转码任务标记为 mode=transcode", st.get("mode") == "transcode", str(st.get("mode")))
+        check("转码任务完成后进度是 100%", st.get("progress") == 100.0,
+              f"progress={st.get('progress')} bytes={st.get('bytes_written')}")
+        # 对照：普通拷贝任务仍然按字节算，也应该是 100%
+        copy_job = post("/_api/export", {"paths": [str(smallest)], "dest": str(WORK / "out_copy"),
+                                         "byDate": False})["job"]
+        st_copy = wait_job(copy_job, timeout=180)
+        check("拷贝任务 mode=copy 且进度 100%",
+              st_copy.get("mode") == "copy" and st_copy.get("progress") == 100.0,
+              f"mode={st_copy.get('mode')} progress={st_copy.get('progress')}")
+    else:
+        check("LUT 导出计划标记 lut", True, "项目里没有 .cube，跳过")
 
     print("\n== 2. 真实导出 + 逐字节校验 ==")
     res = post("/_api/export", {"paths": files, "dest": dest1, "byDate": True, "manifest": True})

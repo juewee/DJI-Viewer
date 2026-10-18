@@ -98,6 +98,87 @@ def resolve_media_path(raw: str) -> Path:
     return p
 
 
+def _group_by_folder(files: "list[Path]") -> dict:
+    groups: dict = {}
+    for p in files:
+        groups.setdefault(str(p.parent), []).append(p)
+    return groups
+
+
+def _reveal_many_win(files: "list[Path]") -> "tuple[bool, str]":
+    """在同一个资源管理器窗口里一次选中多个文件。
+
+    `explorer /select,` 只支持单选，多选用 shell 的 SHOpenFolderAndSelectItems：
+    它接受「目录 PIDL + 一组子 PIDL」，正是"在资源管理器里选中这些文件"的官方做法。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        shell32 = ctypes.windll.shell32
+        ole32 = ctypes.windll.ole32
+    except AttributeError:
+        return False, "非 Windows 环境"
+
+    ole32.CoInitialize(None)
+    try:
+        shell32.SHParseDisplayName.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        shell32.SHParseDisplayName.restype = ctypes.c_long
+        shell32.ILFindLastID.argtypes = [ctypes.c_void_p]
+        shell32.ILFindLastID.restype = ctypes.c_void_p
+        shell32.SHOpenFolderAndSelectItems.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD]
+        shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+
+        def parse(target):
+            pidl = ctypes.c_void_p()
+            attrs = wintypes.DWORD(0)
+            hr = shell32.SHParseDisplayName(
+                str(target), None, ctypes.byref(pidl), 0, ctypes.byref(attrs))
+            return pidl if hr == 0 and pidl.value else None
+
+        folder_pidl = parse(files[0].parent)
+        if not folder_pidl:
+            return False, "无法解析目录"
+        abs_pidls = [pidl for pidl in (parse(f) for f in files) if pidl]
+        if not abs_pidls:
+            return False, "无法解析文件路径"
+        # 同一目录下，绝对 PIDL 的最后一段就是相对该目录的子 PIDL；
+        # 这些指针指向 abs_pidls 内部，只要它们还活着就有效。
+        childs = [shell32.ILFindLastID(p) for p in abs_pidls]
+        array = (ctypes.c_void_p * len(childs))(*childs)
+        hr = shell32.SHOpenFolderAndSelectItems(folder_pidl, len(childs), array, 0)
+        return (hr == 0), f"HRESULT=0x{hr & 0xFFFFFFFF:08X}"
+    finally:
+        ole32.CoUninitialize()
+
+
+def _reveal_many(files: "list[Path]") -> "tuple[bool, str]":
+    """选中一组文件；Windows 走 shell API，失败退回单选。"""
+    if not files:
+        return False, "没有文件"
+    if os.name == "nt":
+        try:
+            ok, detail = _reveal_many_win(files)
+        except Exception as exc:      # 任何 COM 异常都不能影响主流程
+            ok, detail = False, repr(exc)
+        if ok:
+            return True, detail
+        try:
+            subprocess.Popen(["explorer", "/select,", str(files[0])],
+                             **config.no_window_kwargs())
+        except OSError:
+            return False, detail
+        return False, detail
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(files[0])])
+    else:
+        subprocess.Popen(["xdg-open", str(files[0].parent)])
+    return len(files) == 1, "系统默认方式只能定位第一个"
+
+
 def _disposition(name: str) -> str:
     """附件头：ASCII 兜底 + RFC 5987 的 UTF-8 文件名（中文名才不会乱码）。"""
     ascii_name = name.encode("ascii", "ignore").decode("ascii") or "download"
@@ -355,6 +436,38 @@ class Handler(BaseHTTPRequestHandler):
             if method != "POST":
                 return self._error(405, "请用 POST")
             return self._json(dict(cache.purge(), ok=True))
+
+        if path == "/_api/reveal_many":
+            # 把一批勾选的文件在同一个资源管理器窗口里选中
+            if method == "POST":
+                payload = self._body()
+                raw_paths = [str(x) for x in (payload.get("paths") or [])]
+            else:
+                raw_paths = [p for p in (q.get("path") or "").split("|") if p]
+            files = []
+            for raw in raw_paths:
+                try:
+                    p = resolve_media_path(raw)
+                except PermissionError:
+                    continue
+                if p.exists() and p.is_file():
+                    files.append(p)
+            if not files:
+                return self._error(404, "没有可定位的文件")
+            groups = _group_by_folder(files)
+            folder, members = max(groups.items(), key=lambda kv: len(kv[1]))
+            plan = {
+                "folder": folder,
+                "names": [m.name for m in members],
+                "count": len(members),
+                "skipped": len(files) - len(members),
+                "folder_count": len(groups),
+            }
+            if q.get("dry") in ("1", "true", "True"):
+                return self._json({"ok": True, "dry": True, "plan": plan})
+            ok, detail = _reveal_many(members)
+            return self._json({"ok": True, "selected": len(members) if ok else 1,
+                               "multi": ok, "detail": detail, **plan})
 
         if path == "/_api/reveal":
             raw = q.get("path") or ""

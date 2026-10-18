@@ -448,6 +448,15 @@ globalThis.fetch = async (url, opts = {}) => {
       job: 'exp0001', file_count: items.length,
     });
   }
+  if (u.includes('/_api/reveal_many')) {
+    const body = JSON.parse(opts.body || '{}');
+    const list = body.paths || [];
+    return jsonResponse({
+      ok: true, multi: true, count: list.length, selected: list.length,
+      skipped: 0, folder_count: 1, detail: 'HRESULT=0x00000000',
+      folder: 'G:\\DCIM\\DJI_001', names: list.map((p) => String(p).split(/[\\/]/).pop()),
+    });
+  }
   return jsonResponse({ ok: true });
 };
 
@@ -930,11 +939,14 @@ try {
 
 console.log('\n== 9.6 拖出到资源管理器（DownloadURL） ==');
 try {
-  // DataTransfer 的桩：只记录 setData 的内容
+  // DataTransfer 的桩：记录 setData 的内容，以及 items.add 进来的真文件
   function makeDataTransfer() {
     const data = new Map();
+    const items = [];
+    items.add = (file) => { items.push(file); return file; };
     return {
       data,
+      items,
       effectAllowed: 'all',
       dropEffect: 'none',
       types: [],
@@ -983,8 +995,40 @@ try {
   } else {
     ok('连拍组卡片也能拖出（取封面帧）', true, '当前没有连拍组');
   }
+
+  // ---- QQ / 微信 不认 DownloadURL（实测），这里不假装支持：只保证资源管理器那条路 ----
+  ok('拖拽同时给出纯文本路径作为兜底', !!dt.getData('text/plain'),
+    dt.getData('text/plain').slice(-30));
 } catch (err) {
   ok('拖出到资源管理器', false, err.message);
+}
+
+console.log('\n== 9.7 批量"在资源管理器中定位"（多选） ==');
+try {
+  wrapEl(byId('sel-clear')).dispatch('click', {});
+  await new Promise((r) => setTimeout(r, 60));
+  wrapEl(byId('sel-all-filtered')).dispatch('click', {});
+  await new Promise((r) => setTimeout(r, 80));
+  const selectedCount = Number(rawById('sel-n').textContent || 0);
+  ok('先选中全部筛选结果', selectedCount > 0, `${selectedCount} 条`);
+
+  const mark = requests.length;
+  wrapEl(byId('sel-reveal')).dispatch('click', {});
+  await new Promise((r) => setTimeout(r, 260));
+  const rev = requests.slice(mark).find((r) => r.url.includes('/_api/reveal_many'));
+  ok('批量定位走多选接口', !!rev, rev ? rev.method : '没发请求');
+  if (rev) {
+    const body = JSON.parse(rev.body || '{}');
+    ok('一次提交全部勾选素材（不含 LRF 代理）', body.paths.length === selectedCount,
+      `${body.paths.length} / ${selectedCount}`);
+    ok('提交的是主文件路径（不混入 LRF）',
+      body.paths.every((p) => /\.(mp4|jpg|jpeg|dng)$/i.test(p)),
+      String(body.paths[0] || '').slice(-30));
+    ok('提示语报告了选中数量', /已在资源管理器选中\s*\d+\s*个文件/.test(rawById('snackbar').textContent),
+      rawById('snackbar').textContent.slice(0, 40));
+  }
+} catch (err) {
+  ok('批量定位', false, err.message);
 }
 
 console.log('\n== 10. 转存弹窗 ==');

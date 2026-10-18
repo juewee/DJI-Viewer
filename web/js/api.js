@@ -63,6 +63,12 @@ export const api = {
   photo: (path) => `/_photo/${pathSeg(path)}`,
 
   reveal: (path) => fetch(`/_api/reveal${qs({ path })}`).then(json),
+  /** 在资源管理器里一次选中多个文件（同一目录） */
+  revealMany: (paths) => fetch('/_api/reveal_many', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  }).then(json),
   open: (path) => fetch(`/_api/open${qs({ path })}`).then(json),
   purge: () => fetch('/_api/cache/purge', { method: 'POST' }).then(json),
   del: (paths) =>

@@ -269,6 +269,39 @@ def main(folder: str) -> int:
         plain_head = res.headers.get("Content-Disposition") or ""
     check("普通播放请求没有附件头（不影响预览）", "attachment" not in plain_head, plain_head[:40])
 
+    print("\n== 5.6 多选定位（dry-run，不弹窗口） ==")
+    multi = [c["video_path"] for c in clips if c.get("video_path")][:3]
+    if len(multi) >= 2:
+        res_m = post_json("/_api/reveal_many?dry=1", {"paths": multi})
+        plan = res_m.get("plan") or {}
+        check("多选定位返回计划",
+              res_m.get("dry") is True and int(plan.get("count") or 0) == len(multi),
+              f"count={plan.get('count')}")
+        check("计划列出全部文件名",
+              sorted(plan.get("names") or []) == sorted(os.path.basename(p) for p in multi),
+              str((plan.get("names") or [])[:3]))
+        check("同一目录时没有跳过", int(plan.get("skipped") or 0) == 0,
+              f"skipped={plan.get('skipped')}")
+        check("计划里带目录", bool(plan.get("folder")), str(plan.get("folder"))[:48])
+        other = next((c["path"] for c in clips
+                      if os.path.dirname(c["path"]) != os.path.dirname(multi[0])), None)
+        if other:
+            plan2 = (post_json("/_api/reveal_many?dry=1", {"paths": multi + [other]})
+                     .get("plan") or {})
+            check("跨目录时只选中占多数的一组",
+                  int(plan2.get("count") or 0) == len(multi) and int(plan2.get("skipped") or 0) >= 1,
+                  f"count={plan2.get('count')} skipped={plan2.get('skipped')} "
+                  f"dirs={plan2.get('folder_count')}")
+        else:
+            check("跨目录时只选中占多数的一组", True, "当前目录只有一个子目录")
+        try:
+            post_json("/_api/reveal_many?dry=1", {"paths": []})
+            check("空列表返回 404", False, "居然成功了")
+        except urllib.error.HTTPError as exc:
+            check("空列表返回 404", exc.code == 404, f"HTTP {exc.code}")
+    else:
+        check("多选定位返回计划", True, "视频不足两个，跳过")
+
     print("\n== 6. 时间轴抓帧 ==")
     try:
         with get("/_api/frames", path=sample["proxy_path"], t=1.0, w=240) as res:

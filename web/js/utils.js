@@ -70,14 +70,15 @@ export function debounce(fn, wait = 160) {
 export function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
 
 let snackTimer = null;
-export function toast(msg, kind = '') {
+export function toast(msg, kind = '', ms = 0) {
   const box = $('#snackbar');
   if (!box) return;
   box.textContent = msg;
   box.className = `snackbar ${kind}`;
   box.hidden = false;
   clearTimeout(snackTimer);
-  snackTimer = setTimeout(() => { box.hidden = true; }, kind === 'err' ? 4200 : 2400);
+  const hold = ms > 0 ? ms : (kind === 'err' ? 4200 : 2400);
+  snackTimer = setTimeout(() => { box.hidden = true; }, hold);
 }
 
 export async function copyText(text) {

@@ -524,6 +524,16 @@ function selectedPaths() {
   return out;
 }
 
+/** 勾选素材对应的"主文件"（一条素材一个文件，不含 LRF 代理），用于在资源管理器里选中 */
+function selectedPrimaryPaths() {
+  const out = [];
+  for (const clip of selectedClips()) {
+    const p = clip.video_path || clip.photo_path || clip.proxy_path || clip.path;
+    if (p) out.push(p);
+  }
+  return out;
+}
+
 // ------------------------------------------------------------ 弹窗
 function showModal(title, bodyHTML, footNodes = []) {
   const mask = el('div', { class: 'modal-mask' });
@@ -771,14 +781,18 @@ function initControls() {
     } catch (err) { toast(`导出失败：${err.message}`, 'err'); }
   });
   $('#sel-reveal').addEventListener('click', async () => {
-    const paths = selectedPaths();
+    // 一条素材选一个主文件（不含 LRF 代理），资源管理器里选中的就是"你勾的那些"
+    const paths = selectedPrimaryPaths();
     if (!paths.length) return;
-    const dirs = new Set(paths.map((p) => p.replace(/[\\/][^\\/]+$/, '')));
-    if (dirs.size > 4) { toast('选中文件分布在 4 个以上目录，已打开第一个', ''); }
     try {
-      await api.reveal(paths[0]);
-      toast(`已在资源管理器中定位 ${paths.length} 个文件中的第一个`);
-    } catch (err) { toast(err.message, 'err'); }
+      const res = await api.revealMany(paths);
+      if (res.multi) {
+        toast(`已在资源管理器选中 ${res.count} 个文件`
+          + (res.skipped ? `（另有 ${res.skipped} 个在别的目录，未选中）` : ''));
+      } else {
+        toast(`多选定位失败（${res.detail || '未知'}），已定位第一个文件`, 'err');
+      }
+    } catch (err) { toast(`定位失败：${err.message}`, 'err'); }
   });
   $('#sel-delete').addEventListener('click', confirmDelete);
 

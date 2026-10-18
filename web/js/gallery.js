@@ -44,22 +44,33 @@ function mimeOf(name) {
   return MIME_BY_EXT[String(name).slice(dot).toLowerCase()] || 'application/octet-stream';
 }
 
+/** 这条素材拖出时应该给哪个文件 */
+function dragFileOf(clip) {
+  return clip.video_path || clip.photo_path || clip.proxy_path || clip.path || '';
+}
+
+function fileBaseName(path) {
+  return String(path).split(/[\\/]/).pop() || 'file';
+}
+
 /**
- * 拖拽卡片到资源管理器 = 复制该文件。
+ * 拖拽卡片 = 把这个文件复制出去（拖到资源管理器 / 桌面 / 剪辑软件）。
  *
- * 浏览器不允许网页直接交出本地文件句柄，所以走 Chromium 的约定：
+ * 浏览器不允许网页直接交出本地文件句柄，所以走 Chromium 的 `DownloadURL` 约定：
  *   dataTransfer.setData('DownloadURL', 'mime:文件名:绝对URL')
- * 拖到资源管理器松手后，浏览器按该 URL 取一份（服务端带 Content-Disposition: attachment），
- * 落盘成同名文件，资源管理器再把它复制/移动到你松手的位置。
- * 服务就在本机，这条链路是磁盘速度；但**大文件需要先取一份副本**，
- * 所以超大素材更建议用「定位文件」直接在资源管理器里拖。
+ * 松手后浏览器按这个 URL 取一份（服务端配合返回 Content-Disposition: attachment），
+ * 落盘成同名文件，资源管理器再把它复制到你松手的位置。
+ *
+ * 实测限制：**QQ / 微信 不认这个"文件承诺"**，它们会退而取拖动预览图，于是拖视频过去
+ * 也变成一张 jpeg。想往聊天窗口发原文件，用批量条上的「在资源管理器定位」把素材一起选中，
+ * 再从资源管理器拖——那是零拷贝的。
  */
 function attachDragOut(node, clip) {
   node.setAttribute('draggable', 'true');
   node.addEventListener('dragstart', (e) => {
-    const file = clip.video_path || clip.photo_path || clip.proxy_path || clip.path;
+    const file = dragFileOf(clip);
     if (!file || !e.dataTransfer) return;
-    const name = String(file).split(/[\\/]/).pop() || clip.name;
+    const name = fileBaseName(file);
     // DownloadURL 需要绝对 URL；拿不到 location 时（测试环境）退回带占位主机的形式
     let url = api.download(file);
     try {
